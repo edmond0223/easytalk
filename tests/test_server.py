@@ -89,7 +89,7 @@ def test_soniox_request_shape(client, monkeypatch):
     seen = {}
 
     class FakeResp:
-        status_code = 200
+        status_code = 201  # Soniox answers 201 Created
         def json(self):
             return {"api_key": "snx_temp_x", "expires_at": "t"}
 
@@ -173,3 +173,24 @@ def test_stream_text_parses_sse(monkeypatch):
     monkeypatch.setattr(cp, "valid_access_token", lambda store=None, rejected_token=None: "tok")
     monkeypatch.setattr(cp.urllib.request, "urlopen", lambda req, timeout=60: FakeResp(lines))
     assert "".join(cp.stream_text(model="m", instructions="i", user_text="u")) == "Hi there"
+
+
+def test_soniox_error_does_not_echo_body(client, monkeypatch):
+    class FakeResp:
+        status_code = 401
+        text = '{"api_key":"should-not-leak","message":"Incorrect API key provided."}'
+        def json(self):
+            return {"api_key": "should-not-leak", "message": "Incorrect API key provided."}
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): return FakeResp()
+
+    monkeypatch.setattr(appmod.httpx, "AsyncClient", FakeClient)
+    login(client)
+    r = client.post("/api/soniox-key")
+    assert r.status_code == 502
+    assert "Incorrect API key" in r.json()["detail"]
+    assert "should-not-leak" not in r.text

@@ -151,13 +151,16 @@ async def _create_soniox_temp_key() -> dict[str, Any]:
                 "client_reference_id": "easytalk-web",
             },
         )
-    if resp.status_code != 200:
-        try:
-            detail = resp.json().get("error_message") or resp.text[:200]
-        except ValueError:
-            detail = resp.text[:200]
-        raise HTTPException(status_code=502, detail=f"Soniox 临时 Key 申请失败（HTTP {resp.status_code}）：{detail}")
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+    if not 200 <= resp.status_code < 300 or not data.get("api_key"):
+        # Only Soniox's error fields are shown, never the raw body (it may hold a key).
+        detail = (data.get("message") or data.get("error_message")
+                  or data.get("error_type") or "未知错误")
+        raise HTTPException(status_code=502,
+                            detail=f"Soniox 临时 Key 申请失败（HTTP {resp.status_code}）：{str(detail)[:200]}")
     return {"api_key": data["api_key"], "expires_at": data.get("expires_at")}
 
 
