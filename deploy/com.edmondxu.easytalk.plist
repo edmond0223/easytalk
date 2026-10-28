@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.edmondxu.easytalk</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/edmond/01_Projects/easytalk/.venv/bin/python</string>
+		<string>scripts/run_server.py</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/edmond/01_Projects/easytalk</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>EASYTALK_PORT</key>
+		<string>8795</string>
+		<key>HOME</key>
+		<string>/Users/edmond</string>
+		<key>PATH</key>
+		<string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/edmond/01_Projects/easytalk/runtime/service/launchd.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/edmond/01_Projects/easytalk/runtime/service/launchd.stderr.log</string>
+</dict>
+</plist>
