@@ -447,8 +447,14 @@ if (typeof document !== 'undefined') {
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.error_code) {
+        // Stop everything right away: mic off, socket closed, button back to 开始.
         ws.failed = true;
-        toast(`Soniox 错误 ${msg.error_code}：${msg.error_message || msg.error_type}`, 6000);
+        const hint = msg.error_code === 402 ? '（Soniox 余额不足，请到控制台充值）' : '';
+        toast(`Soniox 错误 ${msg.error_code}${hint}：${msg.error_message || msg.error_type}`, 8000);
+        state.stopping = true;
+        state.ws = null;
+        try { ws.close(); } catch {}
+        finishStop();
         setStatus('出错', 'err');
         return;
       }
