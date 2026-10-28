@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="EasyTalk">
+<title>EasyTalk</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="login" class="screen hidden">
+  <div class="login-box">
+    <h1>EasyTalk</h1>
+    <p class="muted">英语对话助手</p>
+    <form id="login-form">
+      <input id="passcode" type="password" autocomplete="current-password" placeholder="访问口令" required>
+      <button type="submit" class="primary">进入</button>
+    </form>
+    <p id="login-error" class="error"></p>
+  </div>
+</div>
+
+<div id="app" class="screen hidden">
+  <header>
+    <div class="brand">EasyTalk</div>
+    <select id="scene" aria-label="场景">
+      <option value="work">工作</option>
+      <option value="hospital">医院</option>
+      <option value="school">学校</option>
+      <option value="shop">购物</option>
+      <option value="phone">电话</option>
+      <option value="daily">日常</option>
+    </select>
+    <div id="status" class="status"><span class="dot"></span><span id="status-text">未开始</span></div>
+  </header>
+
+  <main id="transcript" aria-live="polite">
+    <div id="empty-hint" class="hint">
+      <p><b>点下方「开始」</b>，把手机放在你和对方之间。</p>
+      <p>对方说的话会显示英文和<b>大字中文</b>；你说的话显示在右边。</p>
+      <p>你第一次说话后，<b>点一下那条字幕上的标签</b>，标成「我」。系统就能分清谁是谁。</p>
+      <p class="muted">不保存录音；刷新页面后记录清空。</p>
+    </div>
+  </main>
+
+  <section id="suggest" class="hidden">
+    <div class="suggest-head">
+      <span>建议回答 <small class="muted">点一下可朗读</small></span>
+      <span id="suggest-meta" class="muted"></span>
+      <button id="suggest-refresh" class="ghost" title="重新生成">↻</button>
+    </div>
+    <div id="suggest-list"></div>
+  </section>
+
+  <nav id="phrases" aria-label="快捷短语"></nav>
+
+  <footer>
+    <button id="clear" class="ghost">清空</button>
+    <button id="toggle" class="primary big">开始</button>
+    <div id="level" class="level"><div id="level-bar"></div></div>
+  </footer>
+  <div id="toast" class="toast hidden"></div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
