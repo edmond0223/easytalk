@@ -1,8 +1,7 @@
-import AuthenticationServices
 import CryptoKit
 import Foundation
-import Network
 import UIKit
+import WebKit
 
 /// "Sign in with ChatGPT" for EasyTalk on iPhone (personal use).
 /// Ported from the Mac version (server/chatgpt_plan.py). This app has its own
@@ -19,7 +18,9 @@ enum ChatGPT {
     static let scope = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
     static let planScope = "chatgpt.tokens.use.direct"
     static let callbackPath = "/auth/callback"
-    static let callbackPorts: [UInt16] = [1455, 1456, 1457]
+    /// Loopback redirect. Nothing listens there: the in-app sign-in web view
+    /// intercepts the navigation and reads the code from the URL.
+    static let redirectURI = "http://127.0.0.1:1455/auth/callback"
     static let terminalRefreshErrors: Set<String> = [
         "invalid_grant", "invalid_refresh_token", "refresh_token_expired",
         "refresh_token_invalidated", "refresh_token_reused",
@@ -318,103 +319,79 @@ actor ChatGPTClient {
 
 // MARK: - sign-in
 
-/// Resolves exactly once, from whichever side finishes first.
-final class OnceFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var done = false
-    func claim() -> Bool {
-        lock.withLock {
-            if done { return false }
-            done = true
-            return true
-        }
-    }
-}
+/// In-app sign-in page. When ChatGPT redirects to the loopback callback, the
+/// navigation is cancelled and the code is read straight from the URL (Safari
+/// sign-in sheets refuse http:// redirects when HTTPS-only is on).
+@MainActor
+final class SignInWebController: UIViewController, WKNavigationDelegate, WKUIDelegate {
+    private let startURL: URL
+    private let onResult: (Result<[String: String], Error>) -> Void
+    private var webView: WKWebView!
+    private var finished = false
 
-/// Tiny HTTP listener on 127.0.0.1 that receives the OAuth redirect while the
-/// ChatGPT login sheet is open (the app stays in the foreground meanwhile).
-final class LoopbackServer: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "easytalk.loopback")
-    private var listener: NWListener?
-    var onCallback: (([String: String]) -> Void)?
-
-    func start(ports: [UInt16]) async throws -> UInt16 {
-        for p in ports {
-            if let l = try? await open(p) {
-                listener = l
-                return p
-            }
-        }
-        throw ChatGPTError.message("本机端口 1455–1457 都被占用了，请稍后再试")
+    init(url: URL, onResult: @escaping (Result<[String: String], Error>) -> Void) {
+        startURL = url
+        self.onResult = onResult
+        super.init(nibName: nil, bundle: nil)
     }
 
-    func stop() {
-        listener?.cancel()
-        listener = nil
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        webView = WKWebView(frame: view.bounds, configuration: config)
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        view.addSubview(webView)
+        navigationItem.title = "登录 ChatGPT"
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            systemItem: .cancel,
+            primaryAction: UIAction { [weak self] _ in
+                self?.finish(.failure(ChatGPTError.message("登录已取消")))
+            })
+        webView.load(URLRequest(url: startURL))
     }
 
-    private func open(_ port: UInt16) async throws -> NWListener {
-        let params = NWParameters.tcp
-        params.allowLocalEndpointReuse = true
-        params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!)
-        let l = try NWListener(using: params)
-        l.newConnectionHandler = { [weak self] c in self?.handle(c) }
-        let once = OnceFlag()
-        return try await withCheckedThrowingContinuation { cont in
-            l.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    if once.claim() { cont.resume(returning: l) }
-                case .failed(let e), .waiting(let e):
-                    if once.claim() { l.cancel(); cont.resume(throwing: e) }
-                default:
-                    break
-                }
-            }
-            l.start(queue: queue)
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
+        guard let url = navigationAction.request.url,
+              url.host == "127.0.0.1", url.path == ChatGPT.callbackPath else { return .allow }
+        var params: [String: String] = [:]
+        for item in URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [] {
+            params[item.name] = item.value ?? ""
         }
+        finish(.success(params))
+        return .cancel
     }
 
-    private func handle(_ c: NWConnection) {
-        c.start(queue: queue)
-        c.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] data, _, _, _ in
-            let request = data.map { String(decoding: $0, as: UTF8.self) } ?? ""
-            let firstLine = request.components(separatedBy: "\r\n").first ?? ""
-            let parts = firstLine.split(separator: " ")
-            var params: [String: String] = [:]
-            var matched = false
-            if parts.count >= 2, let comps = URLComponents(string: "http://127.0.0.1" + parts[1]),
-               comps.path == ChatGPT.callbackPath {
-                matched = true
-                for item in comps.queryItems ?? [] { params[item.name] = item.value ?? "" }
-            }
-            let ok = matched && params["code"] != nil && params["error"] == nil
-            let text = matched
-                ? (ok ? "EasyTalk 已连接 ChatGPT，可以关闭此页面。" : "ChatGPT 登录没有完成，请回到 EasyTalk 查看提示。")
-                : "Not found"
-            let body = Data("""
-            <!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width">\
-            <title>EasyTalk</title><p style="font-family:-apple-system;padding:48px 24px;text-align:center;font-size:20px">\(text)</p>
-            """.utf8)
-            let head = "HTTP/1.1 \(matched ? "200 OK" : "404 Not Found")\r\nContent-Type: text/html; charset=utf-8\r\n"
-                + "Content-Length: \(body.count)\r\nConnection: close\r\n\r\n"
-            c.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in c.cancel() })
-            if matched { self?.onCallback?(params) }
-        }
+    /// Pop-ups (e.g. "Continue with Apple") open in the same view.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if navigationAction.targetFrame == nil { webView.load(navigationAction.request) }
+        return nil
+    }
+
+    private func finish(_ result: Result<[String: String], Error>) {
+        guard !finished else { return }
+        finished = true
+        dismiss(animated: true)
+        onResult(result)
     }
 }
 
 @MainActor
-final class ChatGPTAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
-    private var webSession: ASWebAuthenticationSession?
-
-    nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        MainActor.assumeIsolated {
-            UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap(\.windows)
-                .first(where: \.isKeyWindow) ?? ASPresentationAnchor()
-        }
+final class ChatGPTAuth {
+    private static func topViewController() -> UIViewController? {
+        let root = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?.rootViewController
+        var top = root
+        while let next = top?.presentedViewController { top = next }
+        return top
     }
 
     func signIn() async throws -> ChatGPTRecord {
@@ -431,11 +408,7 @@ final class ChatGPTAuth: NSObject, ASWebAuthenticationPresentationContextProvidi
             throw ChatGPTError.message("连不上 ChatGPT 登录服务（HTTP \(dStatus)）")
         }
 
-        let server = LoopbackServer()
-        let port = try await server.start(ports: ChatGPT.callbackPorts)
-        defer { server.stop() }
-
-        let redirectURI = "http://127.0.0.1:\(port)\(ChatGPT.callbackPath)"
+        let redirectURI = ChatGPT.redirectURI
         let state = B64URL.randomToken()
         let nonce = B64URL.randomToken()
         let verifier = B64URL.randomToken()
@@ -460,26 +433,16 @@ final class ChatGPTAuth: NSObject, ASWebAuthenticationPresentationContextProvidi
             throw ChatGPTError.message("登录地址无效")
         }
 
-        let once = OnceFlag()
         let cb: [String: String] = try await withCheckedThrowingContinuation { cont in
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: nil) { _, _ in
-                // Only reached when the sheet is closed before the redirect arrives.
-                if once.claim() { cont.resume(throwing: ChatGPTError.message("登录已取消")) }
+            guard let presenter = Self.topViewController() else {
+                cont.resume(throwing: ChatGPTError.message("无法打开登录页"))
+                return
             }
-            server.onCallback = { [weak session] params in
-                if once.claim() {
-                    cont.resume(returning: params)
-                    DispatchQueue.main.async { session?.cancel() }
-                }
-            }
-            session.presentationContextProvider = self
-            session.prefersEphemeralWebBrowserSession = false
-            self.webSession = session
-            if !session.start(), once.claim() {
-                cont.resume(throwing: ChatGPTError.message("无法打开 ChatGPT 登录页"))
-            }
+            let vc = SignInWebController(url: url) { cont.resume(with: $0) }
+            let nav = UINavigationController(rootViewController: vc)
+            nav.isModalInPresentation = true
+            presenter.present(nav, animated: true)
         }
-        webSession = nil
 
         guard cb["state"] == state else { throw ChatGPTError.message("登录校验失败（state）") }
         if let err = cb["error"] {
