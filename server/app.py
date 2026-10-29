@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import chatgpt_plan as cp
@@ -87,7 +87,7 @@ async def security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Permissions-Policy"] = "microphone=(self)"
-    if request.url.path == "/" or request.url.path.startswith("/static/"):
+    if request.url.path.startswith("/static/") and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -98,8 +98,14 @@ async def healthz() -> dict[str, bool]:
 
 
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC / "index.html")
+async def index() -> HTMLResponse:
+    # Version the asset URLs by file time so neither the phone nor Cloudflare's
+    # edge cache can keep serving an old app.js / style.css after an update.
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    for name in ("app.js", "style.css"):
+        version = int((STATIC / name).stat().st_mtime)
+        html = html.replace(f'/static/{name}"', f'/static/{name}?v={version}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/login")

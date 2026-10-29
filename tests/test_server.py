@@ -39,6 +39,8 @@ def test_index_and_health(client):
     assert client.get("/healthz").json() == {"ok": True}
     r = client.get("/")
     assert r.status_code == 200 and "EasyTalk" in r.text
+    assert "/static/app.js?v=" in r.text and "/static/style.css?v=" in r.text
+    assert r.headers["cache-control"] == "no-store"
     assert r.headers["permissions-policy"] == "microphone=(self)"
 
 
