@@ -118,7 +118,26 @@ function markNumbers(raw) {
     .join('');
 }
 
-function renderParts(parts, { unsure = false } = {}) {
+// Soniox puts spaces between Chinese clauses ("出来， 而且"); drop spaces
+// that sit between Chinese characters or after Chinese punctuation.
+const CJK_SPACE_RE = /([\u3000-\u303f\uff00-\uffef\u4e00-\u9fff])\s+(?=[\u3000-\u303f\uff00-\uffef\u4e00-\u9fff“‘（《])/g;
+function tidyCjk(text) {
+  return text.replace(CJK_SPACE_RE, '$1');
+}
+
+function renderParts(parts, { unsure = false, cjk = false } = {}) {
+  if (cjk) {
+    // Tidy across token boundaries: join, then keep each token's pending flag.
+    parts = parts.map((p, i) => {
+      const next = parts[i + 1];
+      let text = p.text;
+      if (next && /^\s+$/.test(text) === false && /\s+$/.test(text) && /^[\u4e00-\u9fff“（《]/.test(next.text.trimStart())
+          && /[\u3000-\u303f\uff00-\uffef\u4e00-\u9fff]\s+$/.test(text)) text = text.trimEnd();
+      if (i > 0 && /^\s+/.test(text) && /[\u3000-\u303f\uff00-\uffef\u4e00-\u9fff]$/.test(parts[i - 1].text.trimEnd())
+          && /^\s+[\u4e00-\u9fff“（《]/.test(text)) text = text.trimStart();
+      return { ...p, text: tidyCjk(text) };
+    });
+  }
   let html = '';
   let run = '';
   let runPending = null;
@@ -148,7 +167,7 @@ function renderParts(parts, { unsure = false } = {}) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { buildUtterances, plainText, renderParts, markNumbers, escapeHtml, parseTerms };
+  module.exports = { buildUtterances, plainText, renderParts, markNumbers, escapeHtml, parseTerms, tidyCjk };
 }
 
 /* ------------------------------------------------------------------ app */
@@ -261,7 +280,7 @@ if (typeof document !== 'undefined') {
       const speakers = new Set(utts.map((u) => u.speaker));
       for (const u of shown) {
         const en = renderParts(u.en);
-        const zh = renderParts(u.zh);
+        const zh = renderParts(u.zh, { cjk: true });
         if (!en && !zh) continue;
         const who = speakers.size > 1 ? `<div class="who">${escapeHtml(speakerName(u.speaker))}</div>` : '';
         html += `<div class="para">${who}<div class="zh">${zh}</div><div class="en">${en}</div></div>`;
@@ -270,7 +289,7 @@ if (typeof document !== 'undefined') {
     for (const u of lecture ? [] : shown) {
       const isMe = state.me.has(u.speaker);
       const en = renderParts(u.en, { unsure: !isMe });
-      const zh = renderParts(u.zh);
+      const zh = renderParts(u.zh, { cjk: true });
       if (!en && !zh) continue;
       html += `<div class="utt ${isMe ? 'me' : 'them'}">`
         + `<button class="tag" data-speaker="${escapeHtml(u.speaker)}">${escapeHtml(speakerName(u.speaker))}${isMe ? ' · 不是我' : ' · 这是我?'}</button>`
@@ -542,6 +561,9 @@ if (typeof document !== 'undefined') {
         enable_speaker_diarization: true,
         enable_endpoint_detection: true,
         max_endpoint_delay_ms: 1500,
+        // Lectures run on with short pauses; ask for endpoints more readily
+        // so captions break into readable paragraphs.
+        ...(state.mode === 'lecture' ? { endpoint_latency_adjustment_level: 1, endpoint_sensitivity: 0.5 } : {}),
         translation: { type: 'one_way', target_language: 'zh' },
         context: (() => {
           const { terms, translationTerms } = parseTerms(state.termsText);

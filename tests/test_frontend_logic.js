@@ -1,6 +1,6 @@
 // Run: node tests/test_frontend_logic.js
 const assert = require('assert');
-const { buildUtterances, plainText, renderParts, markNumbers, parseTerms } = require('../static/app.js');
+const { buildUtterances, plainText, renderParts, markNumbers, parseTerms, tidyCjk } = require('../static/app.js');
 
 const T = (text, extra = {}) => ({ text, is_final: true, ...extra });
 const O = (text, speaker, extra = {}) => T(text, { speaker, translation_status: 'original', ...extra });
@@ -69,5 +69,10 @@ assert.deepStrictEqual(parsed.terms, ['due on Monday', 'night shift', 'OHIP', 'M
 assert.deepStrictEqual(parsed.translationTerms, [
   { source: 'OHIP', target: '安省医保' }, { source: 'MRI', target: '核磁共振' }]);
 assert.deepStrictEqual(parseTerms(''), { terms: [], translationTerms: [] });
+
+// 8. Chinese spacing tidy-up, English kept intact.
+assert.strictEqual(tidyCjk('出来， 而且显然 是AI生成的'), '出来，而且显然是AI生成的');
+assert.strictEqual(tidyCjk('ChatGPT 是 在说英语'), 'ChatGPT 是在说英语');
+assert.strictEqual(renderParts([{ text: '出来，', final: true }, { text: ' 而且', final: true }], { cjk: true }), '出来，而且');
 
 console.log('frontend logic: all tests passed');
