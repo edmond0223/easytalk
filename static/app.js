@@ -341,8 +341,56 @@ if (typeof document !== 'undefined') {
 
   /* ---------- speech out ---------- */
 
-  function speak(text, onEnd) {
-    if (!('speechSynthesis' in window)) { toast('这个浏览器不支持朗读'); return; }
+  // Natural voice from Soniox TTS (via our server); the browser voice is the fallback.
+  const player = new Audio();
+  const ttsCache = new Map();
+  let playerUnlocked = false;
+
+  // iOS only lets audio play after a tap; play a tiny silent clip on the first one.
+  function silentWavUrl() {
+    const n = 800, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true);
+    v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+  document.addEventListener('pointerdown', () => {
+    if (playerUnlocked) return;
+    playerUnlocked = true;
+    player.src = silentWavUrl();
+    player.play().catch(() => { playerUnlocked = false; });
+  }, true);
+
+  async function speak(text, onEnd) {
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    player.pause();
+    try {
+      let url = ttsCache.get(text);
+      if (!url) {
+        const res = await api('/api/tts', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.detail || `HTTP ${res.status}`);
+        }
+        url = URL.createObjectURL(await res.blob());
+        ttsCache.set(text, url);
+      }
+      player.onended = onEnd || null;
+      player.src = url;
+      await player.play();
+    } catch (err) {
+      console.warn('Soniox TTS failed, using browser voice:', err);
+      browserSpeak(text, onEnd);
+    }
+  }
+
+  function browserSpeak(text, onEnd) {
+    if (!('speechSynthesis' in window)) { toast('这个浏览器不支持朗读'); if (onEnd) onEnd(); return; }
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     const voices = speechSynthesis.getVoices();

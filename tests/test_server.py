@@ -194,3 +194,34 @@ def test_soniox_error_does_not_echo_body(client, monkeypatch):
     assert r.status_code == 502
     assert "Incorrect API key" in r.json()["detail"]
     assert "should-not-leak" not in r.text
+
+
+def test_tts_proxy_and_cache(client, monkeypatch):
+    calls = []
+
+    class FakeResp:
+        status_code = 200
+        content = b"ID3fake-mp3"
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, headers=None, json=None):
+            calls.append((url, headers, json))
+            return FakeResp()
+
+    monkeypatch.setattr(appmod.httpx, "AsyncClient", FakeClient)
+    appmod._tts_cache.clear()
+    assert client.post("/api/tts", json={"text": "Hi"}).status_code == 401
+    login(client)
+    r = client.post("/api/tts", json={"text": "  Sure,   I can.  "})
+    assert r.status_code == 200 and r.content == b"ID3fake-mp3"
+    assert r.headers["content-type"] == "audio/mpeg"
+    url, headers, body = calls[0]
+    assert url == "https://tts-rt.soniox.com/tts"
+    assert headers["Authorization"] == "Bearer sk-test"
+    assert body["model"] == "tts-rt-v2" and body["text"] == "Sure, I can." and body["audio_format"] == "mp3"
+    client.post("/api/tts", json={"text": "Sure, I can."})
+    assert len(calls) == 1  # served from cache
+    assert client.post("/api/tts", json={"text": "   "}).status_code == 400

@@ -10,14 +10,16 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import threading
+from collections import OrderedDict
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import chatgpt_plan as cp
@@ -30,6 +32,10 @@ COOKIE = "et_session"
 COOKIE_MAX_AGE = 30 * 24 * 3600
 SONIOX_TEMP_KEY_URL = "https://api.soniox.com/v1/auth/temporary-api-key"
 SESSION_LIMIT_SECONDS = 3 * 3600
+SONIOX_TTS_URL = "https://tts-rt.soniox.com/tts"
+TTS_MODEL = "tts-rt-v2"
+TTS_VOICE = os.environ.get("EASYTALK_TTS_VOICE", "Adrian")
+TTS_MAX_CHARS = 300
 
 app = FastAPI(title="EasyTalk", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -261,3 +267,55 @@ async def suggest(request: Request) -> StreamingResponse:
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ------------------------------------------------------------------ text-to-speech
+
+_tts_cache: "OrderedDict[str, bytes]" = OrderedDict()
+_TTS_CACHE_SIZE = 64
+
+
+async def _soniox_tts(text: str) -> bytes:
+    api_key = read_secret(SONIOX_ACCOUNT)
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(
+            SONIOX_TTS_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"model": TTS_MODEL, "language": "en", "voice": TTS_VOICE,
+                  "audio_format": "mp3", "text": text},
+        )
+    if not 200 <= resp.status_code < 300 or not resp.content:
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+        detail = data.get("message") or data.get("error_message") or data.get("error_type") or "未知错误"
+        raise HTTPException(status_code=502, detail=f"朗读失败（HTTP {resp.status_code}）：{str(detail)[:200]}")
+    return resp.content
+
+
+@app.post("/api/tts")
+async def tts(request: Request) -> Response:
+    _require_auth(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    text = " ".join(str((body or {}).get("text") or "").split())[:TTS_MAX_CHARS]
+    if not text:
+        raise HTTPException(status_code=400, detail="没有要朗读的内容")
+    audio = _tts_cache.get(text)
+    if audio is None:
+        try:
+            audio = await _soniox_tts(text)
+        except KeychainError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        except httpx.HTTPError:
+            raise HTTPException(status_code=502, detail="连不上 Soniox 朗读服务") from None
+        _tts_cache[text] = audio
+        while len(_tts_cache) > _TTS_CACHE_SIZE:
+            _tts_cache.popitem(last=False)
+    else:
+        _tts_cache.move_to_end(text)
+    return Response(content=audio, media_type="audio/mpeg",
+                    headers={"Cache-Control": "private, max-age=86400"})
