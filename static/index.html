@@ -25,6 +25,11 @@
 <div id="app" class="screen hidden">
   <header>
     <div class="brand">EasyTalk</div>
+    <div class="modes" role="tablist">
+      <button data-mode="chat" role="tab">对话</button>
+      <button data-mode="lecture" role="tab">会议演讲</button>
+    </div>
+    <button id="topic" class="topic hidden" title="会议主题">主题</button>
     <select id="scene" aria-label="场景">
       <option value="work">工作</option>
       <option value="hospital">医院</option>
@@ -41,6 +46,7 @@
       <p><b>点下方「开始」</b>，把手机放在你和对方之间。</p>
       <p>对方说的话会显示英文和<b>大字中文</b>；你说的话显示在右边。</p>
       <p>你第一次说话后，<b>点一下那条字幕上的标签</b>，标成「我」。系统就能分清谁是谁。</p>
+      <p class="lecture-tip">「会议演讲」模式：适合听讲座、开会。可以点「主题」填会议主题，识别专业词会更准；结束后可以「导出全文」。</p>
       <p class="muted">不保存录音；刷新页面后记录清空。</p>
     </div>
   </main>
@@ -55,6 +61,14 @@
   </section>
 
   <nav id="phrases" aria-label="快捷短语"></nav>
+
+  <div id="lecture-bar" class="hidden">
+    <button id="zh-only">仅看中文</button>
+    <button id="font-down" aria-label="字小一点">A−</button>
+    <button id="font-up" aria-label="字大一点">A+</button>
+    <button id="export">导出全文</button>
+  </div>
+  <button id="jump" class="jump hidden">↓ 最新</button>
 
   <footer>
     <button id="clear" class="ghost">清空</button>

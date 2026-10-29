@@ -135,6 +135,10 @@ if (typeof module !== 'undefined') {
 
 if (typeof document !== 'undefined') {
   const $ = (id) => document.getElementById(id);
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
+  };
 
   const state = {
     finals: [],
@@ -154,6 +158,9 @@ if (typeof document !== 'undefined') {
     suggestAbort: null,
     lastSuggestedKey: '',
     endCount: 0,
+    mode: store.get('et-mode', 'chat') === 'lecture' ? 'lecture' : 'chat',
+    topic: store.get('et-topic', ''),
+    fontSize: Math.min(40, Math.max(18, Number(store.get('et-font', 24)) || 24)),
   };
 
   /* ---------- UI helpers ---------- */
@@ -174,9 +181,10 @@ if (typeof document !== 'undefined') {
 
   function speakerName(key) {
     if (state.me.has(key)) return '我';
-    if (!state.names.has(key)) state.names.set(key, `对方 ${state.names.size + 1}`);
+    if (!state.names.has(key)) state.names.set(key, state.names.size + 1);
     const n = state.names.get(key);
-    return state.names.size === 1 ? '对方' : n;
+    if (state.mode === 'lecture') return `发言人 ${n}`;
+    return state.names.size === 1 ? '对方' : `对方 ${n}`;
   }
 
   /* ---------- auth ---------- */
@@ -225,9 +233,20 @@ if (typeof document !== 'undefined') {
     const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
     const utts = buildUtterances(state.finals.concat(state.nonFinals));
     $('empty-hint').classList.toggle('hidden', utts.length > 0);
-    const shown = utts.slice(-60);
+    const lecture = state.mode === 'lecture';
+    const shown = utts.slice(lecture ? -300 : -60);
     let html = '';
-    for (const u of shown) {
+    if (lecture) {
+      const speakers = new Set(utts.map((u) => u.speaker));
+      for (const u of shown) {
+        const en = renderParts(u.en);
+        const zh = renderParts(u.zh);
+        if (!en && !zh) continue;
+        const who = speakers.size > 1 ? `<div class="who">${escapeHtml(speakerName(u.speaker))}</div>` : '';
+        html += `<div class="para">${who}<div class="zh">${zh}</div><div class="en">${en}</div></div>`;
+      }
+    }
+    for (const u of lecture ? [] : shown) {
       const isMe = state.me.has(u.speaker);
       const en = renderParts(u.en, { unsure: !isMe });
       const zh = renderParts(u.zh);
@@ -240,7 +259,18 @@ if (typeof document !== 'undefined') {
     if (!list) { list = document.createElement('div'); list.className = 'list'; box.appendChild(list); }
     list.innerHTML = html;
     if (nearBottom) box.scrollTop = box.scrollHeight;
+    $('jump').classList.toggle('hidden', nearBottom || !utts.length);
   }
+
+  $('transcript').addEventListener('scroll', () => {
+    const box = $('transcript');
+    if (box.scrollHeight - box.scrollTop - box.clientHeight < 120) $('jump').classList.add('hidden');
+  }, { passive: true });
+  $('jump').addEventListener('click', () => {
+    const box = $('transcript');
+    box.scrollTop = box.scrollHeight;
+    $('jump').classList.add('hidden');
+  });
 
   $('transcript').addEventListener('click', (e) => {
     const btn = e.target.closest('.tag');
@@ -262,6 +292,7 @@ if (typeof document !== 'undefined') {
   }
 
   function maybeSuggest() {
+    if (state.mode === 'lecture') return;
     const turns = conversationTurns();
     if (!turns.length) return;
     const last = turns[turns.length - 1];
@@ -475,6 +506,10 @@ if (typeof document !== 'undefined') {
 
     ws.onopen = () => {
       const scene = $('scene').value;
+      const general = state.mode === 'lecture'
+        ? [{ key: 'domain', value: 'Meeting, lecture or presentation' },
+           ...(state.topic ? [{ key: 'topic', value: state.topic }] : [])]
+        : [{ key: 'domain', value: SCENE_DOMAIN[scene] || SCENE_DOMAIN.daily }];
       ws.send(JSON.stringify({
         model: 'stt-rt-v5',
         audio_format: 'pcm_s16le',
@@ -485,10 +520,7 @@ if (typeof document !== 'undefined') {
         enable_endpoint_detection: true,
         max_endpoint_delay_ms: 1500,
         translation: { type: 'one_way', target_language: 'zh' },
-        context: { general: [
-          { key: 'domain', value: SCENE_DOMAIN[scene] || SCENE_DOMAIN.daily },
-          { key: 'location', value: 'Mississauga, Ontario, Canada' },
-        ] },
+        context: { general: [...general, { key: 'location', value: 'Mississauga, Ontario, Canada' }] },
       }));
       ws.configured = true;
       while (state.queue.length) ws.send(state.queue.shift());
@@ -620,6 +652,81 @@ if (typeof document !== 'undefined') {
     render();
   });
 
+  /* ---------- modes ---------- */
+
+  function applyMode() {
+    const lecture = state.mode === 'lecture';
+    document.querySelectorAll('.modes button').forEach((b) => b.classList.toggle('on', b.dataset.mode === state.mode));
+    $('transcript').classList.toggle('lecture', lecture);
+    $('transcript').style.setProperty('--lecture-zh', `${state.fontSize}px`);
+    $('scene').classList.toggle('hidden', lecture);
+    $('topic').classList.toggle('hidden', !lecture);
+    $('topic').textContent = state.topic ? state.topic : '主题';
+    $('phrases').classList.toggle('hidden', lecture);
+    $('lecture-bar').classList.toggle('hidden', !lecture);
+    if (lecture) $('suggest').classList.add('hidden');
+    else if ($('suggest-list').children.length) $('suggest').classList.remove('hidden');
+    render();
+  }
+
+  document.querySelector('.modes').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-mode]');
+    if (!b || b.dataset.mode === state.mode) return;
+    if (state.running) { toast('请先点「停止」再切换模式'); return; }
+    state.mode = b.dataset.mode;
+    store.set('et-mode', state.mode);
+    applyMode();
+  });
+
+  $('topic').addEventListener('click', () => {
+    const v = prompt('会议或演讲的主题（可选，英文或中文都行），例如：Q3 sales review、糖尿病讲座', state.topic);
+    if (v === null) return;
+    state.topic = v.trim().slice(0, 120);
+    store.set('et-topic', state.topic);
+    applyMode();
+    if (state.running) toast('主题会在下次点「开始」时生效');
+  });
+
+  $('zh-only').addEventListener('click', () => {
+    const on = $('transcript').classList.toggle('zh-only');
+    $('zh-only').classList.toggle('on', on);
+  });
+
+  function setFont(delta) {
+    state.fontSize = Math.min(40, Math.max(18, state.fontSize + delta));
+    store.set('et-font', String(state.fontSize));
+    $('transcript').style.setProperty('--lecture-zh', `${state.fontSize}px`);
+  }
+  $('font-up').addEventListener('click', () => setFont(2));
+  $('font-down').addEventListener('click', () => setFont(-2));
+
+  $('export').addEventListener('click', () => {
+    const utts = buildUtterances(state.finals.concat(state.nonFinals));
+    const speakers = new Set(utts.map((u) => u.speaker));
+    const lines = [];
+    for (const u of utts) {
+      const en = plainText(u.en);
+      const zh = plainText(u.zh);
+      if (!en && !zh) continue;
+      if (speakers.size > 1) lines.push(`【${speakerName(u.speaker)}】`);
+      if (en) lines.push(en);
+      if (zh) lines.push(zh);
+      lines.push('');
+    }
+    if (!lines.length) { toast('还没有内容可以导出'); return; }
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+    const title = state.mode === 'lecture' && state.topic ? `主题：${state.topic}\n` : '';
+    const blob = new Blob([`EasyTalk ${d.toLocaleString()}\n${title}\n${lines.join('\n')}`], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `EasyTalk-${stamp}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  });
+
   /* ---------- screen awake ---------- */
 
   async function keepAwake() {
@@ -649,6 +756,7 @@ if (typeof document !== 'undefined') {
       const res = await fetch('/api/status', { credentials: 'same-origin' });
       const data = await res.json();
       if (data.authed) showApp(); else showLogin();
+      applyMode();
     } catch {
       showLogin();
       $('login-error').textContent = '连不上服务器';
