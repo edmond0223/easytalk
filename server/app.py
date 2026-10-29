@@ -97,14 +97,20 @@ async def healthz() -> dict[str, bool]:
     return {"ok": True}
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> Response:
+    data = (STATIC / "favicon-32.png").read_bytes()
+    return Response(data, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/")
 async def index() -> HTMLResponse:
     # Version the asset URLs by file time so neither the phone nor Cloudflare's
     # edge cache can keep serving an old app.js / style.css after an update.
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     version = str(_asset_version())
-    for name in ("app.js", "style.css"):
-        html = html.replace(f'/static/{name}"', f'/static/{name}?v={version}"')
+    for path in STATIC.iterdir():
+        html = html.replace(f'/static/{path.name}"', f'/static/{path.name}?v={version}"')
     # app.js reads this to version the files it loads itself (the audio worklet).
     html = html.replace("<head>", f'<head>\n<meta name="asset-version" content="{version}">', 1)
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})

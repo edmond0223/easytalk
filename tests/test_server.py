@@ -44,6 +44,9 @@ def test_index_and_health(client):
     assert f'<meta name="asset-version" content="{version}">' in r.text
     assert f"/static/app.js?v={version}" in r.text
     assert r.headers["cache-control"] == "no-store"
+    assert "/static/apple-touch-icon.png?v=" in r.text
+    fav = client.get("/favicon.ico")
+    assert fav.status_code == 200 and fav.headers["content-type"] == "image/png"
     assert r.headers["permissions-policy"] == "microphone=(self)"
 
 

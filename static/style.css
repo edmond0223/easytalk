@@ -33,7 +33,9 @@ button.big.stop { background: #dc2626; }
 
 header { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
   padding-top: max(10px, env(safe-area-inset-top)); background: var(--panel); border-bottom: 1px solid var(--border); }
-.brand { font-weight: 700; }
+.brand { font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.brand img { display: block; }
+.login-logo { display: block; margin: 0 auto 8px; }
 header select { font: inherit; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--border);
   background: var(--bg); color: var(--text); }
 .status { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); }
