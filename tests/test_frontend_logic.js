@@ -21,15 +21,25 @@ assert.ok(u[0].ended);
 assert.strictEqual(plainText(u[1].en), 'Sure.');
 assert.strictEqual(plainText(u[1].zh), '当然。');
 
-// 2. Speaker switches before the first translation arrives:
-//    translation goes to the oldest untranslated utterance.
+// 2. Two segments translated in ONE run: split by sentence count (lecture bug).
 u = buildUtterances([
-  O('Can you stay late?', '1'),
-  O('Maybe.', '2'),
-  Z('你能晚点走吗？'),
-  Z('也许。'), // same run -> also goes to the first; acceptable limitation
+  O('Considered various topics, and who is Big X?', '1'), T('<end>'),
+  O('And where does he get off?', '1'), T('<end>'),
+  Z('我考虑过各种话题，'), Z('还有谁是 Big X？'),
+  Z('他凭什么'), Z('退出？'),
+  O('But does it really matter?', '1'), T('<end>'),
+  Z('但这真的重要吗？'),
 ]);
-assert.strictEqual(plainText(u[0].zh), '你能晚点走吗？也许。');
+assert.strictEqual(plainText(u[0].zh), '我考虑过各种话题，还有谁是 Big X？');
+assert.strictEqual(plainText(u[1].zh), '他凭什么退出？');
+assert.strictEqual(plainText(u[2].zh), '但这真的重要吗？');
+// An utterance with two sentences keeps both translated sentences.
+u = buildUtterances([
+  O('Hi. How are you?', '1'), T('<end>'), O('Fine.', '2'), T('<end>'),
+  Z('你好。'), Z('你好吗？'), Z('很好。'),
+]);
+assert.strictEqual(plainText(u[0].zh), '你好。你好吗？');
+assert.strictEqual(plainText(u[1].zh), '很好。');
 // a later separate run goes to the next pending utterance
 u = buildUtterances([
   O('Can you stay late?', '1'), Z('你能晚点走吗？'),

@@ -30,15 +30,26 @@ const PHRASES = [
 
 /* ------------------------------------------------------------------ pure logic */
 
+// Sentence ends, used to line translations up with their originals.
+function countSentences(text, zh) {
+  const re = zh ? /[。？！?!…]+/g : /[.?!…]+(?=\s|$|["')\]])/g;
+  return (String(text).match(re) || []).length;
+}
+
 // Group tokens into utterances: consecutive original tokens of one speaker,
-// split at <end>. Translation tokens go to the oldest utterance whose
-// originals have not been translated yet.
+// split at <end>. Translation tokens fill the oldest utterance whose originals
+// are not translated yet; once its Chinese has as many sentences as its
+// English, the rest of the run moves on to the next waiting utterance
+// (Soniox sometimes sends two segments' translations in one run).
 function buildUtterances(tokens) {
   const utts = [];
   let cur = null;          // utterance receiving original tokens
   let pending = [];        // utterances with untranslated originals
   let transTarget = null;  // utterance receiving the current translation run
   let inTrans = false;
+  const textOf = (parts) => parts.map((p) => p.text).join('');
+  const translated = (u) => u.ended && u.zh.length > 0
+    && countSentences(textOf(u.zh), true) >= Math.max(1, countSentences(textOf(u.en), false));
 
   for (const tok of tokens) {
     const text = tok.text || '';
@@ -49,6 +60,13 @@ function buildUtterances(tokens) {
         if (!transTarget) {
           transTarget = newUtt(tok.speaker || '?');
           utts.push(transTarget);
+        }
+      } else if (translated(transTarget)) {
+        const i = pending.indexOf(transTarget);
+        const next = pending[i + 1];
+        if (next && /^\s*\S/.test(text)) {
+          pending.splice(i, 1);
+          transTarget = next;
         }
       }
       transTarget.zh.push({ text, final: !!tok.is_final });

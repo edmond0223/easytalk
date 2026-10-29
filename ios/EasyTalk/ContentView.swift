@@ -153,6 +153,8 @@ struct StatusBadge: View {
             Circle().fill(running ? Color.green : Color.gray).frame(width: 8, height: 8)
             Text(text).font(.footnote).foregroundStyle(.secondary)
         }
+        .fixedSize()
+        .padding(.horizontal, 4)
     }
 }
 

@@ -69,15 +69,33 @@ struct Utterance: Identifiable, Equatable {
     }
 }
 
+/// Sentence ends, used to line translations up with their originals.
+func countSentences(_ text: String, chinese: Bool) -> Int {
+    let pattern = chinese ? "[。？！?!…]+" : "[.?!…]+(?=\\s|$|[\"')\\]])"
+    guard let re = try? NSRegularExpression(pattern: pattern) else { return 0 }
+    return re.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text))
+}
+
 /// Group tokens into utterances: consecutive original tokens of one speaker,
-/// split at <end>. Translation tokens go to the oldest utterance whose
-/// originals have not been translated yet. (Same logic as the web version.)
+/// split at <end>. Translation tokens fill the oldest utterance whose
+/// originals are not translated yet; once its Chinese has as many sentences
+/// as its English, the rest of the run moves on to the next waiting utterance
+/// (Soniox sometimes sends two segments' translations in one run).
+/// Same logic as the web version (static/app.js).
 func buildUtterances(_ tokens: [Token]) -> [Utterance] {
     var utts: [Utterance] = []
     var cur: Int?
     var pending: [Int] = []
     var transTarget: Int?
     var inTrans = false
+
+    func translated(_ i: Int) -> Bool {
+        let u = utts[i]
+        guard u.ended, !u.zh.isEmpty else { return false }
+        let zh = countSentences(u.zh.map(\.text).joined(), chinese: true)
+        let en = countSentences(u.en.map(\.text).joined(), chinese: false)
+        return zh >= max(1, en)
+    }
 
     for tok in tokens {
         if tok.translationStatus == "translation" {
@@ -88,6 +106,12 @@ func buildUtterances(_ tokens: [Token]) -> [Utterance] {
                     utts.append(Utterance(id: utts.count, speaker: tok.speaker ?? "?"))
                     transTarget = utts.count - 1
                 }
+            } else if let t = transTarget, translated(t),
+                      let i = pending.firstIndex(of: t), i + 1 < pending.count,
+                      tok.text.contains(where: { !$0.isWhitespace }) {
+                let next = pending[i + 1]
+                pending.remove(at: i)
+                transTarget = next
             }
             utts[transTarget!].zh.append(Part(text: tok.text, isFinal: tok.isFinal))
             continue
