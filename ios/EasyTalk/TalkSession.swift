@@ -40,6 +40,10 @@ enum Prefs {
     static let chatgptModel = "chatgptModel", chatgptModels = "chatgptModels"
     static let suggestEnabled = "suggestEnabled"
     static let polishEnabled = "polishEnabled"
+    static let autoSpeak = "autoSpeak"
+
+    /// When I speak my own language, read the translation aloud for the other person.
+    static var autoSpeakOn: Bool { UserDefaults.standard.object(forKey: autoSpeak) as? Bool ?? true }
 
     /// ChatGPT re-translates each finished sentence unless switched off.
     static var polishOn: Bool { UserDefaults.standard.object(forKey: polishEnabled) as? Bool ?? true }
@@ -69,7 +73,12 @@ final class TalkSession {
     private var lastSuggestKey = ""
     /// Fluent ChatGPT translations of finished sentences, keyed by their English text.
     private(set) var polished: [String: String] = [:]
+    @ObservationIgnored private var polishedLang: [String: Lang] = [:]
     @ObservationIgnored private var polishing: Set<String> = []
+    @ObservationIgnored private var spokenKeys: Set<String> = []
+    /// Language pair, fixed for the length of a listening session.
+    private(set) var mine: Lang = LangPrefs.mine
+    private(set) var theirs: Lang = LangPrefs.theirs
 
     private var finals: [Token] = []
     private var nonFinals: [Token] = []
@@ -86,6 +95,33 @@ final class TalkSession {
         let n = speakerNumbers[key] ?? 1
         if mode == .lecture { return "发言人 \(n)" }
         return speakerNumbers.count <= 1 ? "对方" : "对方 \(n)"
+    }
+
+    /// Spoken by me: tagged as me, or spoken in my language.
+    func isMine(_ u: Utterance) -> Bool {
+        me.contains(u.speaker) || u.lang == mine
+    }
+
+    /// Text of this utterance in a given language: the original or the
+    /// translation, whichever is in that language. Lines recorded under an
+    /// earlier language pair fall back sensibly (original on their side,
+    /// translation on mine) instead of showing the same text twice.
+    func text(_ u: Utterance, in lang: Lang) -> String {
+        let orig = u.lang ?? theirs
+        let trans = polishedLang[u.enText] ?? u.transLang ?? (orig == mine ? theirs : mine)
+        if orig == lang { return u.enText }
+        if trans == lang { return translation(for: u) }
+        let other = lang == mine ? theirs : mine
+        if orig == other { return translation(for: u) }
+        if trans == other { return u.enText }
+        return lang == mine ? translation(for: u) : u.enText
+    }
+
+    /// Pick up language changes made in Settings (only while not listening).
+    func reloadLanguages() {
+        guard !running else { return }
+        mine = LangPrefs.mine
+        theirs = LangPrefs.theirs
     }
 
     func toggleMe(_ key: String) {
@@ -107,6 +143,8 @@ final class TalkSession {
             return
         }
         errorMessage = nil
+        mine = LangPrefs.mine
+        theirs = LangPrefs.theirs
         running = true
         stopping = false
         status = "连接中…"
@@ -175,7 +213,9 @@ final class TalkSession {
         suggestStatus = .idle
         lastSuggestKey = ""
         polished = [:]
+        polishedLang = [:]
         polishing = []
+        spokenKeys = []
         rebuild()
     }
 
@@ -203,11 +243,12 @@ final class TalkSession {
             "audio_format": "pcm_s16le",
             "sample_rate": 16000,
             "num_channels": 1,
-            "language_hints": ["en"],
+            "language_hints": [theirs.rawValue, mine.rawValue],
+            "enable_language_identification": true,
             "enable_speaker_diarization": true,
             "enable_endpoint_detection": true,
             "max_endpoint_delay_ms": 1500,
-            "translation": ["type": "one_way", "target_language": "zh"],
+            "translation": ["type": "two_way", "language_a": theirs.rawValue, "language_b": mine.rawValue],
             "context": context,
         ]
         if mode == .lecture {
@@ -242,7 +283,10 @@ final class TalkSession {
         rebuild()
         if sawEnd {
             polishFinished()
-            if mode == .chat { maybeSuggest() }
+            if mode == .chat {
+                maybeSuggest()
+                maybeAutoSpeak()
+            }
         }
         if msg.finished == true { client?.cancel() }
     }
@@ -298,18 +342,26 @@ final class TalkSession {
             let key = u.enText
             guard u.ended, !u.en.contains(where: { !$0.isFinal }),
                   polished[key] == nil, !polishing.contains(key) else { continue }
+            let source = u.lang ?? theirs
+            guard source == mine || source == theirs else { continue }
+            let target = source == mine ? theirs : mine
             polishing.insert(key)
             let context = spoken[max(0, i - 2)..<i].map(\.enText)
             let prompt = buildPolishPrompt(setting: setting, glossary: glossary, context: context, text: key)
+            let instructions = polishInstructions(from: source, to: target)
             Task { [weak self] in
                 var out = ""
                 do {
-                    for try await delta in ChatGPTClient.streamText(model: model, instructions: polishInstructions,
+                    for try await delta in ChatGPTClient.streamText(model: model, instructions: instructions,
                                                                     userText: prompt) {
                         out += delta
                     }
-                    let text = Utterance.tidyChinese(out.trimmingCharacters(in: .whitespacesAndNewlines))
-                    if !text.isEmpty, self?.polishing.contains(key) == true { self?.polished[key] = text }
+                    var text = out.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if target == .zh { text = Utterance.tidyChinese(text) }
+                    if !text.isEmpty, self?.polishing.contains(key) == true {
+                        self?.polishedLang[key] = target
+                        self?.polished[key] = text
+                    }
                 } catch {
                     // Keep Soniox's translation.
                 }
@@ -322,7 +374,7 @@ final class TalkSession {
 
     private func conversationTurns() -> [Turn] {
         Array(utterances
-            .map { Turn(isMe: me.contains($0.speaker), text: $0.enText) }
+            .map { Turn(isMe: isMine($0), text: $0.enText) }
             .filter { !$0.text.isEmpty }
             .suffix(12))
     }
@@ -367,12 +419,13 @@ final class TalkSession {
         let defaults = UserDefaults.standard
         let scene = TalkScene(rawValue: defaults.string(forKey: Prefs.scene) ?? "") ?? .work
         let prompt = buildSuggestionPrompt(scene: scene, turns: turns)
+        let instructions = suggestInstructions(mine: mine, theirs: theirs)
         let model = defaults.string(forKey: Prefs.chatgptModel).flatMap { $0.isEmpty ? nil : $0 } ?? "gpt-6-luna"
         suggestTask = Task { [weak self] in
             let started = Date()
             var buf = ""
             do {
-                for try await delta in ChatGPTClient.streamText(model: model, instructions: suggestInstructions,
+                for try await delta in ChatGPTClient.streamText(model: model, instructions: instructions,
                                                                 userText: prompt) {
                     buf += delta
                     while let nl = buf.firstIndex(of: "\n") {
@@ -393,7 +446,30 @@ final class TalkSession {
 
     private func addSuggestion(_ line: String) {
         guard suggestions.count < 3, let item = parseSuggestionLine(line) else { return }
-        suggestions.append(Suggestion(id: suggestions.count, en: item.en, zh: item.zh))
+        suggestions.append(Suggestion(id: suggestions.count, say: item.en, meaning: item.zh))
+    }
+
+    // MARK: speak my words in their language
+
+    /// When I finish a sentence in my own language, read its translation aloud.
+    private func maybeAutoSpeak() {
+        guard Prefs.autoSpeakOn,
+              let u = utterances.last(where: { $0.ended && !$0.enText.isEmpty }),
+              u.lang == mine, !spokenKeys.contains(u.enText) else { return }
+        let key = u.enText
+        spokenKeys.insert(key)
+        // Wait briefly for the polished translation (or for Soniox's to finish arriving).
+        let wait: Double = (Prefs.polishOn && ChatGPTStore.connected) ? 3.0 : 1.0
+        Task { [weak self] in
+            let deadline = Date().addingTimeInterval(wait)
+            while Date() < deadline {
+                if self?.polished[key] != nil { break }
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            guard let self, self.running,
+                  let latest = self.utterances.first(where: { $0.enText == key }) else { return }
+            Speaker.shared.speak(self.text(latest, in: self.theirs), lang: self.theirs)
+        }
     }
 
     private func rebuild() {

@@ -3,8 +3,8 @@ import Foundation
 /// Reply suggestions: prompt and output parsing (same as server/suggest.py).
 struct Suggestion: Identifiable, Equatable {
     let id: Int
-    let en: String
-    let zh: String
+    let say: String       // in their language
+    let meaning: String   // in my language
 }
 
 struct Turn {
@@ -31,23 +31,26 @@ extension TalkScene {
     }
 }
 
-let suggestInstructions = """
-You are EasyTalk, a live conversation helper for a Mandarin-speaking newcomer in Canada whose English is intermediate. They are in a real, spoken English conversation right now and will read your suggestions on their phone and say one out loud.
+func suggestInstructions(mine: Lang, theirs: Lang) -> String {
+    """
+    You are EasyTalk, a live conversation helper for a newcomer in Canada. The user (ME) speaks \(mine.promptName) natively and is in a real, spoken conversation in \(theirs.promptName) right now. They will read your suggestions on their phone and say one out loud.
 
-Write exactly 3 replies the user (ME) could say next.
+    Write exactly 3 replies ME could say next, in \(theirs.promptName).
 
-Rules:
-- Natural spoken Canadian English, simple everyday words, at most 14 words each. Short beats perfect.
-- The 3 replies serve different purposes:
-  1. The most likely direct answer, acceptance or acknowledgement.
-  2. A polite alternative: decline, delay, set a condition, or offer another option.
-  3. A short clarifying question about a specific detail THEM said (not a generic "please repeat").
-- Do not invent facts about the user (names, times, amounts). Keep such details vague instead.
-- If the last THEM turn is unclear or incomplete, make reply 1 a polite request to repeat or slow down.
+    Rules:
+    - Natural spoken \(theirs.promptName), simple everyday words, at most 14 words each. Short beats perfect.
+    - The 3 replies serve different purposes:
+      1. The most likely direct answer, acceptance or acknowledgement.
+      2. A polite alternative: decline, delay, set a condition, or offer another option.
+      3. A short clarifying question about a specific detail THEM said (not a generic "please repeat").
+    - Do not invent facts about the user (names, times, amounts). Keep such details vague instead.
+    - If the last THEM turn is unclear or incomplete, make reply 1 a polite request to repeat or slow down.
+    - ME may have spoken in either language; THEM lines may be in either language too.
 
-Output format, exactly 3 lines and nothing else:
-English reply ||| 简体中文意思
-"""
+    Output format, exactly 3 lines and nothing else:
+    reply in \(theirs.promptName) ||| meaning in \(mine.promptName)
+    """
+}
 
 func buildSuggestionPrompt(scene: TalkScene, turns: [Turn]) -> String {
     let lines = turns.suffix(12).compactMap { t -> String? in
@@ -80,17 +83,19 @@ func parseSuggestionLine(_ raw: String) -> (en: String, zh: String)? {
 
 // MARK: - polished translation
 
-let polishInstructions = """
-You translate live English speech captions into natural, fluent Simplified Chinese for a Mandarin speaker living in Canada.
+func polishInstructions(from source: Lang, to target: Lang) -> String {
+    """
+    You translate live speech captions from \(source.promptName) into natural, fluent \(target.promptName). The reader is a newcomer living in Canada.
 
-Rules:
-- Translate only the text under TRANSLATE. Earlier lines are context only; never translate or repeat them.
-- Keep the meaning exact, especially numbers, times, dates, amounts, names and places.
-- Natural spoken Chinese, not word-for-word. Keep English names and brands as they are when there is no common Chinese name.
-- The text comes from speech recognition and may contain small errors; translate the most likely intended meaning.
-- Use the glossary translations when those terms appear.
-- Output only the Chinese translation, nothing else.
-"""
+    Rules:
+    - Translate only the text under TRANSLATE. Earlier lines are context only; never translate or repeat them.
+    - Keep the meaning exact, especially numbers, times, dates, amounts, names and places.
+    - Natural spoken language, not word-for-word. Keep names and brands as they are when there is no common translation.
+    - The text comes from speech recognition and may contain small errors; translate the most likely intended meaning.
+    - Use the glossary translations when those terms appear.
+    - Output only the \(target.promptName) translation, nothing else.
+    """
+}
 
 func buildPolishPrompt(setting: String, glossary: [[String: String]], context: [String], text: String) -> String {
     var parts = ["Setting: \(setting)"]

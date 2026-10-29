@@ -9,6 +9,8 @@ struct SettingsView: View {
     @AppStorage(Prefs.chatgptModel) private var chatgptModel = ""
     @AppStorage(Prefs.suggestEnabled) private var suggestOn = true
     @AppStorage(Prefs.polishEnabled) private var polishOn = true
+    @AppStorage(LangPrefs.mineKey) private var myLang = Lang.zh.rawValue
+    @AppStorage(LangPrefs.theirsKey) private var theirLang = Lang.en.rawValue
     @AppStorage(Prefs.chatgptModels) private var modelsCSV = ""
     @State private var chatgpt = ChatGPTStore.load()
     @State private var connecting = false
@@ -26,6 +28,25 @@ struct SettingsView: View {
                     Text("Soniox")
                 } footer: {
                     Text(sonioxKey.isEmpty ? "还没有填写。" : "已填写（\(sonioxKey.count) 个字符）。只保存在这台 iPhone 的钥匙串里。")
+                }
+
+                Section {
+                    Picker("我的语言", selection: $myLang) {
+                        ForEach(Lang.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                    Picker("对方的语言", selection: $theirLang) {
+                        ForEach(Lang.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                } header: {
+                    Text("语言")
+                } footer: {
+                    Text("对方说的话翻译成我的语言；我说的话翻译成对方的语言，并可以自动朗读。")
+                }
+                .onChange(of: myLang) { old, new in
+                    if new == theirLang { theirLang = old }
+                }
+                .onChange(of: theirLang) { old, new in
+                    if new == myLang { myLang = old }
                 }
 
                 Section {

@@ -23,7 +23,7 @@ private final class SpeakerDelegate: NSObject, AVAudioPlayerDelegate, AVSpeechSy
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) { onFinish?() }
 }
 
-/// Speaks English with Soniox TTS (natural voice); the iPhone voice is the fallback.
+/// Speaks with Soniox TTS (natural voice, any of our languages); the iPhone voice is the fallback.
 @MainActor
 @Observable
 final class Speaker {
@@ -46,12 +46,14 @@ final class Speaker {
         }
     }
 
-    func speak(_ text: String) {
+    func speak(_ text: String, lang: Lang) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
         stop()
         generation += 1
         let gen = generation
         speakingText = text
-        Task { await play(text, generation: gen) }
+        Task { await play(text, lang: lang, generation: gen) }
     }
 
     func stop() {
@@ -67,14 +69,14 @@ final class Speaker {
         micMuted.value = false
     }
 
-    private func play(_ text: String, generation gen: Int) async {
+    private func play(_ text: String, lang: Lang, generation gen: Int) async {
         let session = AVAudioSession.sharedInstance()
         if !recording {
             try? session.setCategory(.playback, mode: .spokenAudio)
             try? session.setActive(true)
         }
         do {
-            let data = try await fetch(text)
+            let data = try await fetch(text, lang: lang)
             guard gen == generation else { return }
             let p = try AVAudioPlayer(data: data)
             p.delegate = delegate
@@ -84,15 +86,16 @@ final class Speaker {
         } catch {
             guard gen == generation else { return }
             let u = AVSpeechUtterance(string: text)
-            u.voice = AVSpeechSynthesisVoice(language: "en-CA") ?? AVSpeechSynthesisVoice(language: "en-US")
+            u.voice = AVSpeechSynthesisVoice(language: lang.speechCode)
             u.rate = AVSpeechUtteranceDefaultSpeechRate * 0.95
             micMuted.value = recording
             synth.speak(u)
         }
     }
 
-    private func fetch(_ text: String) async throws -> Data {
-        if let d = cache[text] { return d }
+    private func fetch(_ text: String, lang: Lang) async throws -> Data {
+        let cacheKey = "\(lang.rawValue)|\(text)"
+        if let d = cache[cacheKey] { return d }
         guard let key = Keychain.get(Keychain.sonioxAccount), !key.isEmpty else {
             throw URLError(.userAuthenticationRequired)
         }
@@ -102,7 +105,7 @@ final class Speaker {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 20
         req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": "tts-rt-v2", "language": "en", "voice": "Adrian",
+            "model": "tts-rt-v2", "language": lang.rawValue, "voice": "Adrian",
             "audio_format": "mp3", "text": String(text.prefix(300)),
         ])
         let (data, resp) = try await URLSession.shared.data(for: req)
@@ -110,7 +113,7 @@ final class Speaker {
             throw URLError(.badServerResponse)
         }
         if cache.count > 64 { cache.removeAll() }
-        cache[text] = data
+        cache[cacheKey] = data
         return data
     }
 }

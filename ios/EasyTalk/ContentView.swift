@@ -6,8 +6,9 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var confirmClear = false
     @AppStorage(Prefs.fontSize) private var fontSize: Double = 24
-    @AppStorage("zhOnly") private var zhOnly = false
+    @AppStorage("zhOnly") private var mineOnly = false
     @AppStorage(Prefs.suggestEnabled) private var suggestOn = true
+    @AppStorage(Prefs.autoSpeak) private var autoSpeak = true
 
     var body: some View {
         NavigationStack {
@@ -17,14 +18,19 @@ struct ContentView: View {
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
-                .padding(.vertical, 8)
+                .padding(.top, 8)
                 .disabled(session.running)
+
+                Text("\(session.theirs.title) ⇄ \(session.mine.title)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
 
                 transcript
 
                 if session.mode == .chat {
                     if suggestOn { SuggestionPanel(session: session) }
-                    PhraseBar(suggestOn: $suggestOn)
+                    PhraseBar(session: session, suggestOn: $suggestOn, autoSpeak: $autoSpeak)
                 }
                 if session.mode == .lecture { lectureBar }
                 controls
@@ -40,7 +46,7 @@ struct ContentView: View {
                         .disabled(session.running)
                 }
             }
-            .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showSettings, onDismiss: { session.reloadLanguages() }) { SettingsView() }
             .onChange(of: suggestOn) { _, on in
                 if !on { session.clearSuggestions() }
             }
@@ -68,18 +74,15 @@ struct ContentView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if visible.isEmpty { HintView(mode: session.mode) }
+                    if visible.isEmpty { HintView(mode: session.mode, mine: session.mine, theirs: session.theirs) }
                     ForEach(visible) { u in
                         if session.mode == .lecture {
-                            ParagraphView(utterance: u, zh: session.translation(for: u),
+                            ParagraphView(big: session.text(u, in: session.mine),
+                                          small: session.text(u, in: session.theirs),
                                           speaker: session.distinctSpeakers > 1 ? session.speakerName(u.speaker) : nil,
-                                          fontSize: fontSize, zhOnly: zhOnly)
+                                          pending: u.hasPending, fontSize: fontSize, mineOnly: mineOnly)
                         } else {
-                            BubbleView(utterance: u, zh: session.translation(for: u),
-                                       isMe: session.me.contains(u.speaker),
-                                       name: session.speakerName(u.speaker)) {
-                                session.toggleMe(u.speaker)
-                            }
+                            bubble(u)
                         }
                     }
                     Color.clear.frame(height: 1).id("bottom")
@@ -92,11 +95,33 @@ struct ContentView: View {
         }
     }
 
+    private func bubble(_ u: Utterance) -> some View {
+        let isMe = session.isMine(u)
+        let inTheirs = session.text(u, in: session.theirs)
+        let inMine = session.text(u, in: session.mine)
+        let theirs = session.theirs
+        let speak: (() -> Void)? = (isMe && !inTheirs.isEmpty)
+            ? { Speaker.shared.speak(inTheirs, lang: theirs) }
+            : nil
+        return BubbleView(
+            isMe: isMe,
+            tag: isMe ? (session.me.contains(u.speaker) ? "我 · 不是我" : "我")
+                      : "\(session.speakerName(u.speaker)) · 这是我?",
+            // The other person's words: their language small, my language big.
+            // My words: my language small, their language big (to show or play to them).
+            primary: isMe ? inTheirs : inMine,
+            secondary: isMe ? inMine : inTheirs,
+            pending: u.hasPending,
+            onTag: { session.toggleMe(u.speaker) },
+            onSpeak: speak
+        )
+    }
+
     // MARK: bars
 
     private var lectureBar: some View {
         HStack(spacing: 10) {
-            Toggle("仅看中文", isOn: $zhOnly)
+            Toggle("仅看\(session.mine.title)", isOn: $mineOnly)
                 .toggleStyle(.button)
             Button("A−") { fontSize = max(18, fontSize - 2) }
             Button("A+") { fontSize = min(40, fontSize + 2) }
@@ -144,9 +169,10 @@ struct ContentView: View {
         lines.append("")
         for u in visible {
             if multi { lines.append("【\(session.speakerName(u.speaker))】") }
-            if !u.enText.isEmpty { lines.append(u.enText) }
-            let zh = session.translation(for: u)
-            if !zh.isEmpty { lines.append(zh) }
+            let a = session.text(u, in: session.theirs)
+            let b = session.text(u, in: session.mine)
+            if !a.isEmpty { lines.append(a) }
+            if !b.isEmpty { lines.append(b) }
             lines.append("")
         }
         return lines.joined(separator: "\n")
@@ -170,14 +196,18 @@ struct StatusBadge: View {
 
 struct HintView: View {
     let mode: Mode
+    let mine: Lang
+    let theirs: Lang
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if mode == .chat {
                 Text("点下方「开始」，把手机放在你和对方之间。")
-                Text("对方的话显示英文和**大字中文**；你说话后，点那条字幕上的标签把自己标成「我」。")
+                Text("对方说\(theirs.title)：显示原文和**大字\(mine.title)**。")
+                Text("你说\(mine.title)：自动翻译成\(theirs.title)并朗读给对方听（🔊 可关）。")
+                Text("如果你也说\(theirs.title)，点那条字幕上的标签，把自己标成「我」。")
             } else {
                 Text("点下方「开始」，把手机朝向讲话的人。")
-                Text("中文在上、英文在下；可以在设置里填会议主题，识别专业词会更准。")
+                Text("\(mine.title)在上、\(theirs.title)在下；可以在设置里填会议主题，识别专业词会更准。")
             }
             Text("锁屏后会继续收音。不保存录音；清空后记录就没了。")
                 .foregroundStyle(.secondary)
@@ -190,31 +220,45 @@ struct HintView: View {
 }
 
 struct BubbleView: View {
-    let utterance: Utterance
-    let zh: String
     let isMe: Bool
-    let name: String
+    let tag: String
+    let primary: String
+    let secondary: String
+    let pending: Bool
     let onTag: () -> Void
+    let onSpeak: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button(action: onTag) {
-                Text(isMe ? "我 · 不是我" : "\(name) · 这是我?").font(.caption)
+            HStack {
+                Button(action: onTag) { Text(tag).font(.caption) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                Spacer()
+                if let onSpeak {
+                    Button(action: onSpeak) { Image(systemName: "speaker.wave.2.fill") }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .accessibilityLabel("朗读")
+                }
             }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            if !utterance.enText.isEmpty {
-                Text(utterance.enText)
-                    .font(isMe ? Font.body : Font.subheadline)
-                    .foregroundStyle(isMe ? Color.primary : Color.englishText)
-            }
-            if !zh.isEmpty {
-                Text(zh)
-                    .font(isMe ? Font.footnote : Font.system(size: 23, weight: .semibold))
-                    .foregroundStyle(isMe ? Color.secondary : Color.primary)
+            if isMe {
+                if !primary.isEmpty {
+                    Text(primary).font(.system(size: 21, weight: .semibold))
+                }
+                if !secondary.isEmpty {
+                    Text(secondary).font(.footnote).foregroundStyle(.secondary)
+                }
+            } else {
+                if !secondary.isEmpty {
+                    Text(secondary).font(.subheadline).foregroundStyle(Color.englishText)
+                }
+                if !primary.isEmpty {
+                    Text(primary).font(.system(size: 23, weight: .semibold))
+                }
             }
         }
-        .opacity(utterance.hasPending ? 0.8 : 1)
+        .opacity(pending ? 0.8 : 1)
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(isMe ? Color.blue.opacity(0.15) : Color(.secondarySystemBackground),
@@ -226,40 +270,31 @@ struct BubbleView: View {
 }
 
 struct ParagraphView: View {
-    let utterance: Utterance
-    let zh: String
+    let big: String
+    let small: String
     let speaker: String?
+    let pending: Bool
     let fontSize: Double
-    let zhOnly: Bool
+    let mineOnly: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let speaker {
                 Text(speaker).font(.caption).foregroundStyle(.blue)
             }
-            if !zh.isEmpty {
-                Text(zh)
-                    .font(.system(size: fontSize, weight: .semibold))
+            if !big.isEmpty {
+                Text(big).font(.system(size: fontSize, weight: .semibold))
             }
-            if !zhOnly, !utterance.enText.isEmpty {
-                Text(utterance.enText)
+            if !mineOnly, !small.isEmpty {
+                Text(small)
                     .font(.system(size: fontSize * 0.62))
                     .foregroundStyle(Color.englishText)
             }
             Divider().padding(.top, 6)
         }
-        .opacity(utterance.hasPending ? 0.8 : 1)
+        .opacity(pending ? 0.8 : 1)
         .textSelection(.enabled)
     }
-}
-
-extension Color {
-    /// English captions: a clear sky blue on dark backgrounds, a deep blue on light ones.
-    static let englishText = Color(UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.53, green: 0.80, blue: 1.00, alpha: 1)   // #87CCFF
-            : UIColor(red: 0.07, green: 0.33, blue: 0.75, alpha: 1)   // #1254BF
-    })
 }
 
 // MARK: - chat helpers
@@ -287,12 +322,12 @@ struct SuggestionPanel: View {
                     Text(message).font(.footnote).foregroundStyle(.red)
                 default:
                     ForEach(session.suggestions) { s in
-                        Button { speaker.speak(s.en) } label: {
+                        Button { speaker.speak(s.say, lang: session.theirs) } label: {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(s.en).font(.headline).foregroundStyle(.primary)
+                                Text(s.say).font(.headline).foregroundStyle(.primary)
                                     .fixedSize(horizontal: false, vertical: true)
-                                if !s.zh.isEmpty {
-                                    Text(s.zh).font(.footnote).foregroundStyle(.secondary)
+                                if !s.meaning.isEmpty {
+                                    Text(s.meaning).font(.footnote).foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
@@ -301,7 +336,7 @@ struct SuggestionPanel: View {
                             .padding(10)
                             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
                             .overlay(RoundedRectangle(cornerRadius: 12)
-                                .stroke(speaker.speakingText == s.en ? Color.blue : Color.clear, lineWidth: 2))
+                                .stroke(speaker.speakingText == s.say ? Color.blue : Color.clear, lineWidth: 2))
                         }
                         .buttonStyle(.plain)
                     }
@@ -325,23 +360,10 @@ struct SuggestionPanel: View {
     }
 }
 
-struct Phrase: Identifiable {
-    let zh: String
-    let en: String
-    var id: String { zh }
-}
-
 struct PhraseBar: View {
+    let session: TalkSession
     @Binding var suggestOn: Bool
-
-    static let phrases = [
-        Phrase(zh: "请再说一遍", en: "Sorry, could you say that again?"),
-        Phrase(zh: "请说慢一点", en: "Could you speak a little slower, please?"),
-        Phrase(zh: "让我想一下", en: "Let me think for a second."),
-        Phrase(zh: "说简单一点", en: "Sorry, my English isn't great. Could you say it more simply?"),
-        Phrase(zh: "能写下来吗", en: "Could you write that down for me, please?"),
-        Phrase(zh: "我明白了", en: "Okay, I understand. Thank you."),
-    ]
+    @Binding var autoSpeak: Bool
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -353,11 +375,19 @@ struct PhraseBar: View {
                 .buttonStyle(.bordered)
                 .tint(suggestOn ? Color.orange : Color.gray)
                 .accessibilityLabel(suggestOn ? "关闭建议回答" : "开启建议回答")
+                Toggle(isOn: $autoSpeak) {
+                    Image(systemName: autoSpeak ? "speaker.wave.2.fill" : "speaker.slash")
+                }
+                .toggleStyle(.button)
+                .buttonStyle(.bordered)
+                .tint(autoSpeak ? Color.green : Color.gray)
+                .accessibilityLabel(autoSpeak ? "关闭自动朗读" : "开启自动朗读")
                 Divider().frame(height: 24)
-                ForEach(Self.phrases) { p in
-                    Button(p.zh) { Speaker.shared.speak(p.en) }
+                ForEach(Phrase.all) { p in
+                    let say = p.say(session.theirs)
+                    Button(p.label(session.mine)) { Speaker.shared.speak(say, lang: session.theirs) }
                         .buttonStyle(.bordered)
-                        .tint(Speaker.shared.speakingText == p.en ? Color.blue : Color.gray)
+                        .tint(Speaker.shared.speakingText == say ? Color.blue : Color.gray)
                 }
             }
             .padding(.horizontal)
@@ -365,4 +395,13 @@ struct PhraseBar: View {
         }
         .background(.bar)
     }
+}
+
+extension Color {
+    /// The other language's captions: a clear sky blue on dark backgrounds, a deep blue on light ones.
+    static let englishText = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.53, green: 0.80, blue: 1.00, alpha: 1)   // #87CCFF
+            : UIColor(red: 0.07, green: 0.33, blue: 0.75, alpha: 1)   // #1254BF
+    })
 }

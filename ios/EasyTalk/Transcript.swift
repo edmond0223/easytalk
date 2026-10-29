@@ -7,9 +7,10 @@ struct Token: Decodable, Equatable {
     var speaker: String?
     var translationStatus: String?
     var confidence: Double?
+    var language: String?
 
     enum CodingKeys: String, CodingKey {
-        case text, speaker, confidence
+        case text, speaker, confidence, language
         case isFinal = "is_final"
         case translationStatus = "translation_status"
     }
@@ -21,6 +22,7 @@ struct Token: Decodable, Equatable {
         speaker = try c.decodeIfPresent(String.self, forKey: .speaker)
         translationStatus = try c.decodeIfPresent(String.self, forKey: .translationStatus)
         confidence = try c.decodeIfPresent(Double.self, forKey: .confidence)
+        language = try c.decodeIfPresent(String.self, forKey: .language)
     }
 }
 
@@ -44,15 +46,24 @@ struct Part: Equatable {
     var isFinal: Bool
 }
 
+/// One stretch of speech. `en` holds the spoken (original) tokens and `zh` the
+/// translation tokens; the names date from the English → Chinese version, the
+/// languages now follow the user's settings.
 struct Utterance: Identifiable, Equatable {
     let id: Int
     var speaker: String
     var en: [Part] = []
     var zh: [Part] = []
     var ended = false
+    var langVotes: [String: Int] = [:]
+    var transVotes: [String: Int] = [:]
 
-    var enText: String { Utterance.join(en) }
+    var enText: String { Utterance.tidyChinese(Utterance.join(en)) }
     var zhText: String { Utterance.tidyChinese(Utterance.join(zh)) }
+    /// Language Soniox detected for the spoken words.
+    var lang: Lang? { langVotes.max { $0.value < $1.value }.flatMap { Lang(rawValue: $0.key) } }
+    /// Language Soniox translated it into.
+    var transLang: Lang? { transVotes.max { $0.value < $1.value }.flatMap { Lang(rawValue: $0.key) } }
     var hasPending: Bool { en.contains { !$0.isFinal } || zh.contains { !$0.isFinal } }
 
     static func join(_ parts: [Part]) -> String {
@@ -70,8 +81,8 @@ struct Utterance: Identifiable, Equatable {
 }
 
 /// Sentence ends, used to line translations up with their originals.
-func countSentences(_ text: String, chinese: Bool) -> Int {
-    let pattern = chinese ? "[。？！?!…]+" : "[.?!…]+(?=\\s|$|[\"')\\]])"
+func countSentences(_ text: String, chinese: Bool = false) -> Int {
+    let pattern = "[。？！]+|[.?!…]+(?=\\s|$|[\"')\\]»])"
     guard let re = try? NSRegularExpression(pattern: pattern) else { return 0 }
     return re.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text))
 }
@@ -92,8 +103,8 @@ func buildUtterances(_ tokens: [Token]) -> [Utterance] {
     func translated(_ i: Int) -> Bool {
         let u = utts[i]
         guard u.ended, !u.zh.isEmpty else { return false }
-        let zh = countSentences(u.zh.map(\.text).joined(), chinese: true)
-        let en = countSentences(u.en.map(\.text).joined(), chinese: false)
+        let zh = countSentences(u.zh.map(\.text).joined())
+        let en = countSentences(u.en.map(\.text).joined())
         return zh >= max(1, en)
     }
 
@@ -114,6 +125,9 @@ func buildUtterances(_ tokens: [Token]) -> [Utterance] {
                 transTarget = next
             }
             utts[transTarget!].zh.append(Part(text: tok.text, isFinal: tok.isFinal))
+            if let l = tok.language, !tok.text.trimmingCharacters(in: .whitespaces).isEmpty {
+                utts[transTarget!].transVotes[l, default: 0] += 1
+            }
             continue
         }
         if inTrans {
@@ -132,6 +146,9 @@ func buildUtterances(_ tokens: [Token]) -> [Utterance] {
             cur = utts.count - 1
         }
         utts[cur!].en.append(Part(text: tok.text, isFinal: tok.isFinal))
+        if let l = tok.language, !tok.text.trimmingCharacters(in: .whitespaces).isEmpty {
+            utts[cur!].langVotes[l, default: 0] += 1
+        }
         if tok.translationStatus == "original", !pending.contains(cur!) { pending.append(cur!) }
     }
     return utts
