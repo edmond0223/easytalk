@@ -72,10 +72,24 @@
 
   <footer>
     <button id="clear" class="ghost">清空</button>
+    <button id="terms-btn" class="ghost">词表</button>
     <button id="toggle" class="primary big">开始</button>
     <div id="level" class="level"><div id="level-bar"></div></div>
   </footer>
   <div id="toast" class="toast hidden"></div>
+
+  <dialog id="terms-dialog">
+    <form method="dialog">
+      <h3>常用词 / 易错词</h3>
+      <p class="muted small">每行一个。识别时会优先往这些说法上靠；写成 <code>英文 = 中文</code> 还能指定翻译。下次点「开始」生效。</p>
+      <textarea id="terms-text" rows="10" spellcheck="false" autocapitalize="off"
+        placeholder="due on Monday&#10;night shift&#10;T&amp;T Supermarket&#10;OHIP = 安省医保&#10;MRI = 核磁共振"></textarea>
+      <div class="dialog-actions">
+        <button value="cancel" class="ghost">取消</button>
+        <button id="terms-save" value="save" class="primary">保存</button>
+      </div>
+    </form>
+  </dialog>
 </div>
 <script src="/static/app.js"></script>
 </body>

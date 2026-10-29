@@ -1,6 +1,6 @@
 // Run: node tests/test_frontend_logic.js
 const assert = require('assert');
-const { buildUtterances, plainText, renderParts, markNumbers } = require('../static/app.js');
+const { buildUtterances, plainText, renderParts, markNumbers, parseTerms } = require('../static/app.js');
 
 const T = (text, extra = {}) => ({ text, is_final: true, ...extra });
 const O = (text, speaker, extra = {}) => T(text, { speaker, translation_status: 'original', ...extra });
@@ -62,5 +62,12 @@ assert.strictEqual(markNumbers('六点半 18点'), '六点半 <mark>18点</mark>
 assert.strictEqual(markNumbers("That's fine"), 'That&#39;s fine');
 assert.strictEqual(renderParts([{ text: "I'd like 2", final: true }]), 'I&#39;d like <mark>2</mark>');
 assert.strictEqual(markNumbers('<b>5</b>'), '&lt;b&gt;<mark>5</mark>&lt;/b&gt;');
+
+// 7. Word list parsing.
+const parsed = parseTerms('due on Monday\n\n  night shift \n# comment\nOHIP = 安省医保\nMRI＝核磁共振\nDue on Monday\n');
+assert.deepStrictEqual(parsed.terms, ['due on Monday', 'night shift', 'OHIP', 'MRI']);
+assert.deepStrictEqual(parsed.translationTerms, [
+  { source: 'OHIP', target: '安省医保' }, { source: 'MRI', target: '核磁共振' }]);
+assert.deepStrictEqual(parseTerms(''), { terms: [], translationTerms: [] });
 
 console.log('frontend logic: all tests passed');

@@ -76,6 +76,26 @@ function buildUtterances(tokens) {
   return utts;
 }
 
+// Parse the user's word list: one per line; "English = 中文" also fixes the translation.
+const MAX_TERMS = 150;
+function parseTerms(text) {
+  const terms = [];
+  const translationTerms = [];
+  const seen = new Set();
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = line.match(/^(.+?)\s*[=＝]\s*(.+)$/);
+    const source = (m ? m[1] : line).trim().slice(0, 80);
+    if (!source || seen.has(source.toLowerCase())) continue;
+    seen.add(source.toLowerCase());
+    terms.push(source);
+    if (m) translationTerms.push({ source, target: m[2].trim().slice(0, 80) });
+    if (terms.length >= MAX_TERMS) break;
+  }
+  return { terms, translationTerms };
+}
+
 function newUtt(speaker) {
   return { speaker, en: [], zh: [], ended: false, endFinal: false };
 }
@@ -128,7 +148,7 @@ function renderParts(parts, { unsure = false } = {}) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { buildUtterances, plainText, renderParts, markNumbers, escapeHtml };
+  module.exports = { buildUtterances, plainText, renderParts, markNumbers, escapeHtml, parseTerms };
 }
 
 /* ------------------------------------------------------------------ app */
@@ -160,6 +180,7 @@ if (typeof document !== 'undefined') {
     endCount: 0,
     mode: store.get('et-mode', 'chat') === 'lecture' ? 'lecture' : 'chat',
     topic: store.get('et-topic', ''),
+    termsText: store.get('et-terms', ''),
     fontSize: Math.min(40, Math.max(18, Number(store.get('et-font', 24)) || 24)),
   };
 
@@ -520,7 +541,13 @@ if (typeof document !== 'undefined') {
         enable_endpoint_detection: true,
         max_endpoint_delay_ms: 1500,
         translation: { type: 'one_way', target_language: 'zh' },
-        context: { general: [...general, { key: 'location', value: 'Mississauga, Ontario, Canada' }] },
+        context: (() => {
+          const { terms, translationTerms } = parseTerms(state.termsText);
+          const ctx = { general: [...general, { key: 'location', value: 'Mississauga, Ontario, Canada' }] };
+          if (terms.length) ctx.terms = terms;
+          if (translationTerms.length) ctx.translation_terms = translationTerms;
+          return ctx;
+        })(),
       }));
       ws.configured = true;
       while (state.queue.length) ws.send(state.queue.shift());
@@ -727,6 +754,28 @@ if (typeof document !== 'undefined') {
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   });
 
+  /* ---------- word list ---------- */
+
+  function updateTermsButton() {
+    const n = parseTerms(state.termsText).terms.length;
+    $('terms-btn').textContent = n ? `词表 ${n}` : '词表';
+  }
+
+  $('terms-btn').addEventListener('click', () => {
+    $('terms-text').value = state.termsText;
+    const dlg = $('terms-dialog');
+    if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
+  });
+
+  $('terms-dialog').addEventListener('close', () => {
+    if ($('terms-dialog').returnValue !== 'save') return;
+    state.termsText = $('terms-text').value;
+    store.set('et-terms', state.termsText);
+    updateTermsButton();
+    const n = parseTerms(state.termsText).terms.length;
+    toast(state.running ? `已保存 ${n} 个词，下次点「开始」时生效` : `已保存 ${n} 个词`, 2500);
+  });
+
   /* ---------- screen awake ---------- */
 
   async function keepAwake() {
@@ -757,6 +806,7 @@ if (typeof document !== 'undefined') {
       const data = await res.json();
       if (data.authed) showApp(); else showLogin();
       applyMode();
+      updateTermsButton();
     } catch {
       showLogin();
       $('login-error').textContent = '连不上服务器';
