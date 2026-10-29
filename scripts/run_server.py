@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start EasyTalk on 127.0.0.1 (Cloudflare Tunnel forwards https://easytalk.edmondxu.com here)."""
+"""Start EasyTalk on 127.0.0.1 (Cloudflare Tunnel forwards https://easytalk.example.com here)."""
 from __future__ import annotations
 
 import os

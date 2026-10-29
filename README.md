@@ -14,7 +14,7 @@
 ```text
 iPhone Safari  ──(麦克风 PCM，临时 Key)──▶  Soniox stt-rt-v5（转写 + 区分说话人 + 英译中）
       │
-      └──(访问口令 Cookie)──▶ https://easytalk.edmondxu.com ─ Cloudflare Tunnel ─▶ 127.0.0.1:8791
+      └──(访问口令 Cookie)──▶ https://easytalk.example.com ─ Cloudflare Tunnel ─▶ 127.0.0.1:8791
                                    server/app.py
                                    ├─ /api/soniox-key  用钥匙串里的 Soniox Key 换 60 秒临时 Key
                                    └─ /api/suggest     用自己的 ChatGPT 套餐生成建议回答（SSE 流式）
@@ -70,7 +70,7 @@ node tests/test_frontend_logic.js             # 前端逻辑测试（需要 Node
 ## 部署（正式运行）
 
 ```text
-https://easytalk.edmondxu.com
+https://easytalk.example.com
   ↓  Cloudflare Tunnel「crossborder-ai-web」
      （配置：crossborder-ai-web/runtime/cloudflare/config.yml，launchd：com.edmondxu.crossborder-ai-web-tunnel）
 http://127.0.0.1:8795
