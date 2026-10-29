@@ -88,9 +88,14 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// Highlight numbers, times and amounts.
-function markNumbers(html) {
-  return html.replace(/(\$?\d[\d:.,/%]*(?:\s?(?:am|pm|AM|PM|点|号|元|块))?)/g, '<mark>$1</mark>');
+// Escape raw text and highlight numbers, times and amounts.
+// Numbers are found in the raw text first, so HTML entities such as &#39;
+// (from apostrophes) are never touched.
+const NUMBER_RE = /(\$?\d[\d:.,/%]*(?:\s?(?:am|pm|AM|PM|点|号|元|块))?)/;
+function markNumbers(raw) {
+  return raw.split(NUMBER_RE)
+    .map((part, i) => (i % 2 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)))
+    .join('');
 }
 
 function renderParts(parts, { unsure = false } = {}) {
@@ -99,7 +104,7 @@ function renderParts(parts, { unsure = false } = {}) {
   let runPending = null;
   const flush = () => {
     if (!run) return;
-    const body = markNumbers(escapeHtml(run));
+    const body = markNumbers(run);
     html += runPending ? `<span class="pending">${body}</span>` : body;
     run = '';
   };
@@ -108,7 +113,7 @@ function renderParts(parts, { unsure = false } = {}) {
     const isUnsure = unsure && p.final && typeof p.conf === 'number' && p.conf < UNSURE_CONFIDENCE && p.text.trim();
     if (isUnsure) {
       flush();
-      const body = markNumbers(escapeHtml(p.text));
+      const body = markNumbers(p.text);
       const lead = body.match(/^\s*/)[0];
       html += `${lead}<span class="unsure">${body.slice(lead.length)}</span>`;
       runPending = null;

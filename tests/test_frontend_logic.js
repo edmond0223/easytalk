@@ -58,4 +58,9 @@ assert.ok(html.includes('<span class="pending"> &lt;b&gt;</span>'), html);
 assert.strictEqual(markNumbers('at 6:30 pm'), 'at <mark>6:30 pm</mark>');
 assert.strictEqual(markNumbers('六点半 18点'), '六点半 <mark>18点</mark>');
 
+// 6. Apostrophes are escaped once and never highlighted as numbers.
+assert.strictEqual(markNumbers("That's fine"), 'That&#39;s fine');
+assert.strictEqual(renderParts([{ text: "I'd like 2", final: true }]), 'I&#39;d like <mark>2</mark>');
+assert.strictEqual(markNumbers('<b>5</b>'), '&lt;b&gt;<mark>5</mark>&lt;/b&gt;');
+
 console.log('frontend logic: all tests passed');
