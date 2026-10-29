@@ -489,7 +489,8 @@ if (typeof document !== 'undefined') {
     };
     if (ctx.state === 'suspended') await ctx.resume();
     state.audio = { stream, ctx, node };
-    return ctx.sampleRate;
+    // The worklet downsamples to 16 kHz unless the device is already lower.
+    return Math.min(ctx.sampleRate, 16000);
   }
 
   function stopAudio() {
@@ -597,7 +598,7 @@ if (typeof document !== 'undefined') {
         if (!ws.failed && state.reconnects < MAX_RECONNECTS && state.audio) {
           state.reconnects += 1;
           setStatus('重新连接…', 'warn');
-          openSession(state.audio.ctx.sampleRate).catch((err) => failStop(err));
+          openSession(Math.min(state.audio.ctx.sampleRate, 16000)).catch((err) => failStop(err));
         } else {
           failStop(new Error('连接断开了'));
         }
