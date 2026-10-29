@@ -13,21 +13,69 @@ SCENES: dict[str, str] = {
     "daily": "Everyday small talk with neighbours, friends or people nearby.",
 }
 
-INSTRUCTIONS = """You are EasyTalk, a live conversation helper for a Mandarin-speaking newcomer in Canada whose English is intermediate. They are in a real, spoken English conversation right now and will read your suggestions on their phone and say one out loud.
+LANGS: dict[str, str] = {
+    "zh": "Simplified Chinese (Mandarin)",
+    "en": "Canadian English",
+    "fr": "Canadian French",
+}
 
-Write exactly 3 replies the user (ME) could say next.
+
+def lang_pair(mine: object, theirs: object) -> tuple[str, str]:
+    """Validated (mine, theirs) language codes; defaults zh / en."""
+    m = mine if mine in LANGS else "zh"
+    t = theirs if theirs in LANGS else "en"
+    if t == m:
+        t = "zh" if m == "en" else "en"
+    return m, t  # type: ignore[return-value]
+
+
+def instructions(mine: str = "zh", theirs: str = "en") -> str:
+    me, them = LANGS[mine], LANGS[theirs]
+    return f"""You are EasyTalk, a live conversation helper for a newcomer in Canada. The user (ME) speaks {me} natively and is in a real, spoken conversation in {them} right now. They will read your suggestions on their phone and say one out loud.
+
+Write exactly 3 replies ME could say next, in {them}.
 
 Rules:
-- Natural spoken Canadian English, simple everyday words, at most 14 words each. Short beats perfect.
+- Natural spoken {them}, simple everyday words, at most 14 words each. Short beats perfect.
 - The 3 replies serve different purposes:
   1. The most likely direct answer, acceptance or acknowledgement.
   2. A polite alternative: decline, delay, set a condition, or offer another option.
   3. A short clarifying question about a specific detail THEM said (not a generic "please repeat").
 - Do not invent facts about the user (names, times, amounts). Keep such details vague instead.
 - If the last THEM turn is unclear or incomplete, make reply 1 a polite request to repeat or slow down.
+- ME may have spoken in either language; THEM lines may be in either language too.
 
 Output format, exactly 3 lines and nothing else:
-English reply ||| 简体中文意思"""
+reply in {them} ||| meaning in {me}"""
+
+
+INSTRUCTIONS = instructions()
+
+
+def polish_instructions(source: str, target: str) -> str:
+    return f"""You translate live speech captions from {LANGS[source]} into natural, fluent {LANGS[target]}. The reader is a newcomer living in Canada.
+
+Rules:
+- Translate only the text under TRANSLATE. Earlier lines are context only; never translate or repeat them.
+- Keep the meaning exact, especially numbers, times, dates, amounts, names and places.
+- Natural spoken language, not word-for-word. Keep names and brands as they are when there is no common translation.
+- The text comes from speech recognition and may contain small errors; translate the most likely intended meaning.
+- Use the glossary translations when those terms appear.
+- Output only the {LANGS[target]} translation, nothing else."""
+
+
+def build_polish_text(setting: str, glossary: list[dict[str, Any]], context: list[str], text: str) -> str:
+    parts = [f"Setting: {setting}"]
+    lines = [f"{g.get('source')} = {g.get('target')}" for g in glossary[:60]
+             if isinstance(g, dict) and g.get("source") and g.get("target")]
+    if lines:
+        parts.append("Glossary:\n" + "\n".join(str(x)[:200] for x in lines))
+    ctx = [" ".join(str(c).split())[:MAX_CHARS] for c in context[-2:] if str(c).strip()]
+    if ctx:
+        parts.append("Context (earlier, do not translate):\n" + "\n".join(ctx))
+    parts.append("TRANSLATE:\n" + " ".join(text.split())[:MAX_CHARS])
+    return "\n\n".join(parts)
+
 
 MAX_TURNS = 12
 MAX_CHARS = 600

@@ -233,3 +233,68 @@ def test_tts_proxy_and_cache(client, monkeypatch):
     client.post("/api/tts", json={"text": "Sure, I can."})
     assert len(calls) == 1  # served from cache
     assert client.post("/api/tts", json={"text": "   "}).status_code == 400
+
+
+def test_suggest_language_pair(client, monkeypatch):
+    seen = {}
+
+    def fake_stream(*, model, instructions, user_text, **kw):
+        seen["instructions"] = instructions
+        yield "Oui, d'accord. ||| 好的。"
+
+    monkeypatch.setattr(appmod.cp, "stream_text", fake_stream)
+    monkeypatch.setattr(appmod, "_suggest_model", lambda: "gpt-test")
+    login(client)
+    r = client.post("/api/suggest", json={"mine": "zh", "theirs": "fr",
+                                          "turns": [{"who": "them", "text": "Vous restez ce soir ?"}]})
+    assert "in Canadian French" in seen["instructions"]
+    assert sse_events(r.text)[0]["en"] == "Oui, d'accord."
+    # bad codes fall back to zh / en
+    client.post("/api/suggest", json={"mine": "xx", "theirs": "xx", "turns": []})
+    assert "Write exactly 3 replies ME could say next, in Canadian English" in seen["instructions"]
+
+
+def test_polish(client, monkeypatch):
+    seen = {}
+
+    def fake_stream(*, model, instructions, user_text, **kw):
+        seen.update(instructions=instructions, user_text=user_text)
+        yield "我们沿着海滩散步的时候，"
+        yield "开始起风了。"
+
+    monkeypatch.setattr(appmod.cp, "stream_text", fake_stream)
+    monkeypatch.setattr(appmod, "_suggest_model", lambda: "gpt-test")
+    assert client.post("/api/polish", json={"text": "x"}).status_code == 401
+    login(client)
+    r = client.post("/api/polish", json={
+        "text": "It started getting windy when we were walking along the beach.",
+        "source": "en", "target": "zh", "setting": "Small talk",
+        "context": ["We went to the beach."], "glossary": [{"source": "OHIP", "target": "安省医保"}]})
+    assert r.status_code == 200 and r.json()["text"] == "我们沿着海滩散步的时候，开始起风了。"
+    assert "into natural, fluent Simplified Chinese" in seen["instructions"]
+    assert "TRANSLATE:\nIt started getting windy" in seen["user_text"]
+    assert "OHIP = 安省医保" in seen["user_text"] and "We went to the beach." in seen["user_text"]
+    assert client.post("/api/polish", json={"text": "hi", "source": "en", "target": "en"}).status_code == 400
+
+
+def test_tts_language(client, monkeypatch):
+    calls = []
+
+    class FakeResp:
+        status_code = 200
+        content = b"ID3"
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, headers=None, json=None):
+            calls.append(json)
+            return FakeResp()
+
+    monkeypatch.setattr(appmod.httpx, "AsyncClient", FakeClient)
+    appmod._tts_cache.clear()
+    login(client)
+    client.post("/api/tts", json={"text": "Merci", "lang": "fr"})
+    client.post("/api/tts", json={"text": "Merci", "lang": "en"})
+    assert [c["language"] for c in calls] == ["fr", "en"]

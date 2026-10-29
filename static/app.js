@@ -1,9 +1,12 @@
 'use strict';
-/* EasyTalk phase 1 — phone page.
+/* EasyTalk — phone page.
  * Mic → AudioWorklet (16-bit PCM) → Soniox WebSocket (temporary key from our server).
- * Soniox returns English tokens with speaker labels plus Chinese translation tokens.
- * When the other person finishes a turn (<end> token), we ask our server for
- * reply suggestions (ChatGPT plan). Nothing is stored; reload clears everything.
+ * Soniox transcribes both people with speaker labels and translates two ways
+ * between "their" language and "mine" (zh / en / fr). After each finished
+ * sentence our server polishes the translation and, when the other person
+ * finishes a turn, suggests replies (ChatGPT plan). When I speak my own
+ * language, the translation is read aloud for the other person.
+ * Nothing is stored on the server; reload clears everything.
  */
 
 const SONIOX_WS = 'wss://stt-rt.soniox.com/transcribe-websocket';
@@ -19,21 +22,45 @@ const SCENE_DOMAIN = {
   daily: 'Everyday small talk in Canada',
 };
 
+const LANG_NAMES = { zh: '中文', en: '英语', fr: '法语' };
+const SPEECH_CODES = { zh: 'zh-CN', en: 'en-CA', fr: 'fr-CA' };
+
+// Quick phrases: [label in my language, what to say in theirs], per language.
 const PHRASES = [
-  ['请再说一遍', 'Sorry, could you say that again?'],
-  ['请说慢一点', 'Could you speak a little slower, please?'],
-  ['让我想一下', 'Let me think for a second.'],
-  ['说简单一点', "Sorry, my English isn't great. Could you say it more simply?"],
-  ['能写下来吗', 'Could you write that down for me, please?'],
-  ['我明白了', 'Okay, I understand. Thank you.'],
+  { zh: ['请再说一遍', '不好意思，能再说一遍吗？'], en: ['Say again', 'Sorry, could you say that again?'],
+    fr: ['Répéter', "Pardon, pouvez-vous répéter, s'il vous plaît ?"] },
+  { zh: ['请说慢一点', '能说慢一点吗？'], en: ['Slower', 'Could you speak a little slower, please?'],
+    fr: ['Plus lentement', "Pourriez-vous parler un peu plus lentement, s'il vous plaît ?"] },
+  { zh: ['让我想一下', '让我想一下。'], en: ['Let me think', 'Let me think for a second.'],
+    fr: ['Je réfléchis', 'Laissez-moi réfléchir une seconde.'] },
+  { zh: ['说简单一点', '不好意思，我的中文不太好，能说简单一点吗？'],
+    en: ['Simpler', "Sorry, my English isn't great. Could you say it more simply?"],
+    fr: ['Plus simple', "Désolé, mon français n'est pas très bon. Pourriez-vous le dire plus simplement ?"] },
+  { zh: ['能写下来吗', '能帮我写下来吗？'], en: ['Write it down', 'Could you write that down for me, please?'],
+    fr: ['Par écrit', "Pourriez-vous me l'écrire, s'il vous plaît ?"] },
+  { zh: ['我明白了', '好的，我明白了，谢谢。'], en: ['I understand', 'Okay, I understand. Thank you.'],
+    fr: ['Je comprends', "D'accord, je comprends. Merci."] },
 ];
+
+function langPair(mine, theirs) {
+  const m = LANG_NAMES[mine] ? mine : 'zh';
+  let t = LANG_NAMES[theirs] ? theirs : 'en';
+  if (t === m) t = m === 'en' ? 'zh' : 'en';
+  return [m, t];
+}
 
 /* ------------------------------------------------------------------ pure logic */
 
 // Sentence ends, used to line translations up with their originals.
-function countSentences(text, zh) {
-  const re = zh ? /[。？！?!…]+/g : /[.?!…]+(?=\s|$|["')\]])/g;
+function countSentences(text) {
+  const re = /[。？！]+|[.?!…]+(?=\s|$|["')\]»])/g;
   return (String(text).match(re) || []).length;
+}
+
+function majority(votes) {
+  let best = null, n = 0;
+  for (const [k, v] of Object.entries(votes)) if (v > n) { best = k; n = v; }
+  return best;
 }
 
 // Group tokens into utterances: consecutive original tokens of one speaker,
@@ -49,7 +76,7 @@ function buildUtterances(tokens) {
   let inTrans = false;
   const textOf = (parts) => parts.map((p) => p.text).join('');
   const translated = (u) => u.ended && u.zh.length > 0
-    && countSentences(textOf(u.zh), true) >= Math.max(1, countSentences(textOf(u.en), false));
+    && countSentences(textOf(u.zh)) >= Math.max(1, countSentences(textOf(u.en)));
 
   for (const tok of tokens) {
     const text = tok.text || '';
@@ -70,6 +97,7 @@ function buildUtterances(tokens) {
         }
       }
       transTarget.zh.push({ text, final: !!tok.is_final });
+      if (tok.language && text.trim()) transTarget.transVotes[tok.language] = (transTarget.transVotes[tok.language] || 0) + 1;
       continue;
     }
     if (inTrans) {
@@ -89,7 +117,12 @@ function buildUtterances(tokens) {
       utts.push(cur);
     }
     cur.en.push({ text, final: !!tok.is_final, conf: tok.confidence });
+    if (tok.language && text.trim()) cur.langVotes[tok.language] = (cur.langVotes[tok.language] || 0) + 1;
     if (tok.translation_status === 'original' && !pending.includes(cur)) pending.push(cur);
+  }
+  for (const u of utts) {
+    u.lang = majority(u.langVotes);         // language actually spoken
+    u.transLang = majority(u.transVotes);   // language Soniox translated into
   }
   return utts;
 }
@@ -114,8 +147,10 @@ function parseTerms(text) {
   return { terms, translationTerms };
 }
 
+// `en` holds the spoken (original) tokens, `zh` the translation tokens; the
+// names date from the English → Chinese version.
 function newUtt(speaker) {
-  return { speaker, en: [], zh: [], ended: false, endFinal: false };
+  return { speaker, en: [], zh: [], ended: false, endFinal: false, langVotes: {}, transVotes: {} };
 }
 
 function plainText(parts) {
@@ -185,7 +220,8 @@ function renderParts(parts, { unsure = false, cjk = false } = {}) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { buildUtterances, plainText, renderParts, markNumbers, escapeHtml, parseTerms, tidyCjk };
+  module.exports = { buildUtterances, plainText, renderParts, markNumbers, escapeHtml, parseTerms, tidyCjk,
+    countSentences, langPair };
 }
 
 /* ------------------------------------------------------------------ app */
@@ -219,7 +255,54 @@ if (typeof document !== 'undefined') {
     topic: store.get('et-topic', ''),
     termsText: store.get('et-terms', ''),
     fontSize: Math.min(40, Math.max(18, Number(store.get('et-font', 24)) || 24)),
+    mine: 'zh',
+    theirs: 'en',
+    suggestOn: store.get('et-suggest', '1') === '1',
+    autoSpeak: store.get('et-autospeak', '1') === '1',
+    polishOn: store.get('et-polish', '1') === '1',
+    polished: new Map(),    // original text -> { text, lang }
+    polishing: new Set(),
+    spoken: new Set(),
+    muted: false,           // mic sends silence while we speak
   };
+  [state.mine, state.theirs] = langPair(store.get('et-mine', 'zh'), store.get('et-theirs', 'en'));
+
+  /* ---------- languages ---------- */
+
+  function utKey(u) { return tidyCjk(plainText(u.en)); }
+  function currentUtts() { return buildUtterances(state.finals.concat(state.nonFinals)); }
+  function isMine(u) { return state.me.has(u.speaker) || u.lang === state.mine; }
+
+  // Which part of the utterance is in `lang`: the original or the translation.
+  // Lines recorded under an earlier language pair fall back sensibly.
+  function partIn(u, lang) {
+    const o = u.lang || state.theirs;
+    const p = state.polished.get(utKey(u));
+    const t = (p && p.lang) || u.transLang || (o === state.mine ? state.theirs : state.mine);
+    if (o === lang) return 'orig';
+    if (t === lang) return 'trans';
+    const other = lang === state.mine ? state.theirs : state.mine;
+    if (o === other) return 'trans';
+    if (t === other) return 'orig';
+    return lang === state.mine ? 'trans' : 'orig';
+  }
+
+  function htmlIn(u, lang, { unsure = false } = {}) {
+    if (partIn(u, lang) === 'orig') return renderParts(u.en, { unsure, cjk: u.lang === 'zh' });
+    const p = state.polished.get(utKey(u));
+    return p ? markNumbers(p.text) : renderParts(u.zh, { cjk: true });
+  }
+
+  function plainIn(u, lang) {
+    if (partIn(u, lang) === 'orig') return utKey(u);
+    const p = state.polished.get(utKey(u));
+    return p ? p.text : tidyCjk(plainText(u.zh));
+  }
+
+  function updateLangButton() {
+    $('lang-btn').textContent = `${LANG_NAMES[state.theirs]} ⇄ ${LANG_NAMES[state.mine]}`;
+    $('zh-only').textContent = `仅看${LANG_NAMES[state.mine]}`;
+  }
 
   /* ---------- UI helpers ---------- */
 
@@ -297,21 +380,30 @@ if (typeof document !== 'undefined') {
     if (lecture) {
       const speakers = new Set(utts.map((u) => u.speaker));
       for (const u of shown) {
-        const en = renderParts(u.en);
-        const zh = renderParts(u.zh, { cjk: true });
-        if (!en && !zh) continue;
+        const big = htmlIn(u, state.mine);
+        const small = htmlIn(u, state.theirs);
+        if (!big && !small) continue;
         const who = speakers.size > 1 ? `<div class="who">${escapeHtml(speakerName(u.speaker))}</div>` : '';
-        html += `<div class="para">${who}<div class="zh">${zh}</div><div class="en">${en}</div></div>`;
+        html += `<div class="para">${who}<div class="zh">${big}</div><div class="en">${small}</div></div>`;
       }
     }
     for (const u of lecture ? [] : shown) {
-      const isMe = state.me.has(u.speaker);
-      const en = renderParts(u.en, { unsure: !isMe });
-      const zh = renderParts(u.zh, { cjk: true });
-      if (!en && !zh) continue;
-      html += `<div class="utt ${isMe ? 'me' : 'them'}">`
-        + `<button class="tag" data-speaker="${escapeHtml(u.speaker)}">${escapeHtml(speakerName(u.speaker))}${isMe ? ' · 不是我' : ' · 这是我?'}</button>`
-        + `<div class="en">${en}</div><div class="zh">${zh}</div></div>`;
+      const isMe = isMine(u);
+      const inTheirs = htmlIn(u, state.theirs, { unsure: !isMe });
+      const inMine = htmlIn(u, state.mine);
+      if (!inTheirs && !inMine) continue;
+      const tagged = state.me.has(u.speaker);
+      const tag = isMe && !tagged
+        ? '<span class="tag">我</span>'
+        : `<button class="tag" data-speaker="${escapeHtml(u.speaker)}">${escapeHtml(speakerName(u.speaker))}${tagged ? ' · 不是我' : ' · 这是我?'}</button>`;
+      const say = isMe && inTheirs
+        ? `<button class="say" data-say="${escapeHtml(plainIn(u, state.theirs))}" aria-label="朗读">🔊</button>` : '';
+      // The other person's words: their language small, mine big.
+      // My words: their language big (to show or play to them), mine small.
+      html += `<div class="utt ${isMe ? 'me' : 'them'}"><div class="utt-head">${tag}${say}</div>`
+        + (isMe ? `<div class="big">${inTheirs}</div><div class="small">${inMine}</div>`
+                : `<div class="en">${inTheirs}</div><div class="zh">${inMine}</div>`)
+        + '</div>';
     }
     let list = box.querySelector('.list');
     if (!list) { list = document.createElement('div'); list.className = 'list'; box.appendChild(list); }
@@ -331,7 +423,9 @@ if (typeof document !== 'undefined') {
   });
 
   $('transcript').addEventListener('click', (e) => {
-    const btn = e.target.closest('.tag');
+    const sayBtn = e.target.closest('.say');
+    if (sayBtn) { speak(sayBtn.dataset.say, state.theirs); return; }
+    const btn = e.target.closest('button.tag');
     if (!btn) return;
     const key = btn.dataset.speaker;
     if (state.me.has(key)) state.me.delete(key); else state.me.add(key);
@@ -342,15 +436,14 @@ if (typeof document !== 'undefined') {
   /* ---------- suggestions ---------- */
 
   function conversationTurns() {
-    const utts = buildUtterances(state.finals.concat(state.nonFinals));
-    return utts
-      .map((u) => ({ who: state.me.has(u.speaker) ? 'me' : 'them', text: plainText(u.en), speaker: u.speaker }))
+    return currentUtts()
+      .map((u) => ({ who: isMine(u) ? 'me' : 'them', text: utKey(u), speaker: u.speaker }))
       .filter((t) => t.text)
       .slice(-12);
   }
 
   function maybeSuggest() {
-    if (state.mode === 'lecture') return;
+    if (state.mode === 'lecture' || !state.suggestOn) return;
     const turns = conversationTurns();
     if (!turns.length) return;
     const last = turns[turns.length - 1];
@@ -375,7 +468,8 @@ if (typeof document !== 'undefined') {
       const res = await api('/api/suggest', {
         method: 'POST', signal: ctrl.signal,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scene: $('scene').value, turns: turns.map(({ who, text }) => ({ who, text })) }),
+        body: JSON.stringify({ scene: $('scene').value, mine: state.mine, theirs: state.theirs,
+          turns: turns.map(({ who, text }) => ({ who, text })) }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
       const reader = res.body.getReader();
@@ -420,7 +514,7 @@ if (typeof document !== 'undefined') {
     if (!b || !b.dataset.en) return;
     document.querySelectorAll('.sug.speaking').forEach((x) => x.classList.remove('speaking'));
     b.classList.add('speaking');
-    speak(b.dataset.en, () => b.classList.remove('speaking'));
+    speak(b.dataset.en, state.theirs, () => b.classList.remove('speaking'));
   });
 
   $('suggest-refresh').addEventListener('click', () => {
@@ -452,51 +546,88 @@ if (typeof document !== 'undefined') {
     player.play().catch(() => { playerUnlocked = false; });
   }, true);
 
-  async function speak(text, onEnd) {
+  // While we speak during listening, the mic sends silence so our own voice
+  // is not transcribed as another speaker.
+  player.addEventListener('playing', () => { state.muted = state.running; });
+  for (const ev of ['ended', 'pause', 'error']) player.addEventListener(ev, () => { state.muted = false; });
+
+  async function speak(text, lang, onEnd) {
+    text = String(text || '').trim();
+    if (!text) return;
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     player.pause();
+    const cacheKey = `${lang}|${text}`;
     try {
-      let url = ttsCache.get(text);
+      let url = ttsCache.get(cacheKey);
       if (!url) {
         const res = await api('/api/tts', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text, lang }),
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(data.detail || `HTTP ${res.status}`);
         }
         url = URL.createObjectURL(await res.blob());
-        ttsCache.set(text, url);
+        ttsCache.set(cacheKey, url);
       }
       player.onended = onEnd || null;
       player.src = url;
       await player.play();
     } catch (err) {
       console.warn('Soniox TTS failed, using browser voice:', err);
-      browserSpeak(text, onEnd);
+      browserSpeak(text, lang, onEnd);
     }
   }
 
-  function browserSpeak(text, onEnd) {
+  function browserSpeak(text, lang, onEnd) {
     if (!('speechSynthesis' in window)) { toast('这个浏览器不支持朗读'); if (onEnd) onEnd(); return; }
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     const voices = speechSynthesis.getVoices();
-    u.voice = voices.find((v) => v.lang === 'en-CA') || voices.find((v) => v.lang === 'en-US') || null;
-    u.lang = u.voice ? u.voice.lang : 'en-US';
+    const code = SPEECH_CODES[lang] || 'en-US';
+    u.voice = voices.find((v) => v.lang === code) || voices.find((v) => v.lang.startsWith(lang)) || null;
+    u.lang = u.voice ? u.voice.lang : code;
     u.rate = 0.95;
-    if (onEnd) u.onend = onEnd;
+    u.onstart = () => { state.muted = state.running; };
+    u.onend = () => { state.muted = false; if (onEnd) onEnd(); };
     speechSynthesis.speak(u);
   }
 
-  const phrases = $('phrases');
-  for (const [zh, en] of PHRASES) {
-    const b = document.createElement('button');
-    b.textContent = zh;
-    b.title = en;
-    b.addEventListener('click', () => { speak(en); toast(en, 2500); });
-    phrases.appendChild(b);
+  function renderPhrases() {
+    const bar = $('phrases');
+    bar.innerHTML = '';
+    const sug = document.createElement('button');
+    sug.className = `toggle${state.suggestOn ? ' on' : ''}`;
+    sug.textContent = state.suggestOn ? '💡 建议' : '💡 建议（关）';
+    sug.addEventListener('click', () => {
+      state.suggestOn = !state.suggestOn;
+      store.set('et-suggest', state.suggestOn ? '1' : '0');
+      if (!state.suggestOn) {
+        if (state.suggestAbort) state.suggestAbort.abort();
+        $('suggest').classList.add('hidden');
+        $('suggest-list').innerHTML = '';
+      }
+      renderPhrases();
+    });
+    const auto = document.createElement('button');
+    auto.className = `toggle${state.autoSpeak ? ' on' : ''}`;
+    auto.textContent = state.autoSpeak ? '🔊 自动朗读' : '🔇 自动朗读';
+    auto.title = `我说${LANG_NAMES[state.mine]}时，自动用${LANG_NAMES[state.theirs]}读出来`;
+    auto.addEventListener('click', () => {
+      state.autoSpeak = !state.autoSpeak;
+      store.set('et-autospeak', state.autoSpeak ? '1' : '0');
+      renderPhrases();
+    });
+    bar.append(sug, auto);
+    for (const p of PHRASES) {
+      const b = document.createElement('button');
+      const say = p[state.theirs][1];
+      b.textContent = p[state.mine][0];
+      b.title = say;
+      b.addEventListener('click', () => { speak(say, state.theirs); toast(say, 2500); });
+      bar.appendChild(b);
+    }
   }
 
   /* ---------- audio ---------- */
@@ -542,6 +673,7 @@ if (typeof document !== 'undefined') {
   }
 
   function sendAudio(buf) {
+    if (state.muted) buf = new ArrayBuffer(buf.byteLength);
     const ws = state.ws;
     if (ws && ws.readyState === WebSocket.OPEN && ws.configured) {
       ws.send(buf);
@@ -575,14 +707,15 @@ if (typeof document !== 'undefined') {
         audio_format: 'pcm_s16le',
         sample_rate: sampleRate,
         num_channels: 1,
-        language_hints: ['en'],
+        language_hints: [state.theirs, state.mine],
+        enable_language_identification: true,
         enable_speaker_diarization: true,
         enable_endpoint_detection: true,
         max_endpoint_delay_ms: 1500,
         // Lectures run on with short pauses; ask for endpoints more readily
         // so captions break into readable paragraphs.
         ...(state.mode === 'lecture' ? { endpoint_latency_adjustment_level: 1, endpoint_sensitivity: 0.5 } : {}),
-        translation: { type: 'one_way', target_language: 'zh' },
+        translation: { type: 'two_way', language_a: state.theirs, language_b: state.mine },
         context: (() => {
           const { terms, translationTerms } = parseTerms(state.termsText);
           const ctx = { general: [...general, { key: 'location', value: 'Mississauga, Ontario, Canada' }] };
@@ -626,7 +759,11 @@ if (typeof document !== 'undefined') {
       }
       state.nonFinals = nonFinals;
       scheduleRender();
-      if (sawEnd) maybeSuggest();
+      if (sawEnd) {
+        polishFinished();
+        maybeSuggest();
+        maybeAutoSpeak();
+      }
       if (msg.finished) ws.close();
     };
 
@@ -647,6 +784,65 @@ if (typeof document !== 'undefined') {
         finishStop();
       }
     };
+  }
+
+  /* ---------- polished translation ---------- */
+
+  function polishSetting() {
+    if (state.mode === 'lecture') {
+      return state.topic ? `A meeting or lecture about: ${state.topic}` : 'A meeting, lecture or presentation.';
+    }
+    return SCENE_DOMAIN[$('scene').value] || SCENE_DOMAIN.daily;
+  }
+
+  // After each finished sentence, ask our server for a fluent translation.
+  function polishFinished() {
+    if (!state.polishOn) return;
+    const spoken = currentUtts().filter((u) => utKey(u));
+    const glossary = parseTerms(state.termsText).translationTerms;
+    for (let i = Math.max(0, spoken.length - 6); i < spoken.length; i++) {
+      const u = spoken[i];
+      const key = utKey(u);
+      if (!u.ended || u.en.some((p) => !p.final) || state.polished.has(key) || state.polishing.has(key)) continue;
+      const source = u.lang || state.theirs;
+      if (source !== state.mine && source !== state.theirs) continue;
+      const target = source === state.mine ? state.theirs : state.mine;
+      state.polishing.add(key);
+      const context = spoken.slice(Math.max(0, i - 2), i).map(utKey);
+      api('/api/polish', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: key, source, target, setting: polishSetting(), glossary, context }),
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (d && d.text && state.polishing.has(key)) {
+            state.polished.set(key, { text: target === 'zh' ? tidyCjk(d.text) : d.text, lang: target });
+            scheduleRender();
+          }
+        })
+        .catch(() => { /* keep Soniox's translation */ })
+        .finally(() => state.polishing.delete(key));
+    }
+  }
+
+  // When I finish a sentence in my own language, read its translation aloud.
+  function maybeAutoSpeak() {
+    if (!state.autoSpeak || state.mode !== 'chat') return;
+    const utts = currentUtts();
+    const u = [...utts].reverse().find((x) => x.ended && utKey(x));
+    if (!u || u.lang !== state.mine) return;
+    const key = utKey(u);
+    if (state.spoken.has(key)) return;
+    state.spoken.add(key);
+    const wait = state.polishOn ? 3000 : 1000;
+    const t0 = Date.now();
+    const tick = () => {
+      if (!state.running) return;
+      if (!state.polished.has(key) && Date.now() - t0 < wait) { setTimeout(tick, 150); return; }
+      const cur = currentUtts().find((x) => utKey(x) === key);
+      if (cur) speak(plainIn(cur, state.theirs), state.theirs);
+    };
+    setTimeout(tick, 150);
   }
 
   /* ---------- start / stop ---------- */
@@ -716,6 +912,9 @@ if (typeof document !== 'undefined') {
     state.me.clear();
     state.names.clear();
     state.lastSuggestedKey = '';
+    state.polished.clear();
+    state.polishing.clear();
+    state.spoken.clear();
     $('suggest').classList.add('hidden');
     $('suggest-list').innerHTML = '';
     render();
@@ -770,16 +969,16 @@ if (typeof document !== 'undefined') {
   $('font-down').addEventListener('click', () => setFont(-2));
 
   $('export').addEventListener('click', () => {
-    const utts = buildUtterances(state.finals.concat(state.nonFinals));
+    const utts = currentUtts();
     const speakers = new Set(utts.map((u) => u.speaker));
     const lines = [];
     for (const u of utts) {
-      const en = plainText(u.en);
-      const zh = plainText(u.zh);
-      if (!en && !zh) continue;
+      const a = plainIn(u, state.theirs);
+      const b = plainIn(u, state.mine);
+      if (!a && !b) continue;
       if (speakers.size > 1) lines.push(`【${speakerName(u.speaker)}】`);
-      if (en) lines.push(en);
-      if (zh) lines.push(zh);
+      if (a) lines.push(a);
+      if (b) lines.push(b);
       lines.push('');
     }
     if (!lines.length) { toast('还没有内容可以导出'); return; }
@@ -818,6 +1017,36 @@ if (typeof document !== 'undefined') {
     toast(state.running ? `已保存 ${n} 个词，下次点「开始」时生效` : `已保存 ${n} 个词`, 2500);
   });
 
+  /* ---------- language dialog ---------- */
+
+  $('lang-btn').addEventListener('click', () => {
+    if (state.running) { toast('请先点「停止」再切换语言'); return; }
+    $('lang-mine').value = state.mine;
+    $('lang-theirs').value = state.theirs;
+    $('polish-on').checked = state.polishOn;
+    const dlg = $('lang-dialog');
+    if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
+  });
+
+  $('lang-mine').addEventListener('change', () => {
+    if ($('lang-theirs').value === $('lang-mine').value) $('lang-theirs').value = state.mine;
+  });
+  $('lang-theirs').addEventListener('change', () => {
+    if ($('lang-mine').value === $('lang-theirs').value) $('lang-mine').value = state.theirs;
+  });
+
+  $('lang-dialog').addEventListener('close', () => {
+    if ($('lang-dialog').returnValue !== 'save') return;
+    [state.mine, state.theirs] = langPair($('lang-mine').value, $('lang-theirs').value);
+    state.polishOn = $('polish-on').checked;
+    store.set('et-mine', state.mine);
+    store.set('et-theirs', state.theirs);
+    store.set('et-polish', state.polishOn ? '1' : '0');
+    updateLangButton();
+    renderPhrases();
+    render();
+  });
+
   /* ---------- screen awake ---------- */
 
   async function keepAwake() {
@@ -849,6 +1078,8 @@ if (typeof document !== 'undefined') {
       if (data.authed) showApp(); else showLogin();
       applyMode();
       updateTermsButton();
+      updateLangButton();
+      renderPhrases();
     } catch {
       showLogin();
       $('login-error').textContent = '连不上服务器';

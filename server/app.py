@@ -24,7 +24,8 @@ from fastapi.staticfiles import StaticFiles
 
 from . import chatgpt_plan as cp
 from .keychain import PASSCODE_ACCOUNT, SONIOX_ACCOUNT, KeychainError, read_secret
-from .suggest import INSTRUCTIONS, SCENES, build_user_text, parse_line
+from .suggest import (SCENES, build_polish_text, build_user_text, instructions, lang_pair,
+                      parse_line, polish_instructions)
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "static"
@@ -236,6 +237,8 @@ async def suggest(request: Request) -> StreamingResponse:
     turns = body.get("turns") if isinstance(body.get("turns"), list) else []
     turns = [t for t in turns if isinstance(t, dict)]
     user_text = build_user_text(scene, turns)
+    mine, theirs = lang_pair(body.get("mine"), body.get("theirs"))
+    prompt_instructions = instructions(mine, theirs)
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
@@ -244,7 +247,7 @@ async def suggest(request: Request) -> StreamingResponse:
     def worker() -> None:
         try:
             model = _suggest_model()
-            for delta in cp.stream_text(model=model, instructions=INSTRUCTIONS,
+            for delta in cp.stream_text(model=model, instructions=prompt_instructions,
                                         user_text=user_text):
                 if stop.is_set():
                     return
@@ -294,13 +297,13 @@ _tts_cache: "OrderedDict[str, bytes]" = OrderedDict()
 _TTS_CACHE_SIZE = 64
 
 
-async def _soniox_tts(text: str) -> bytes:
+async def _soniox_tts(text: str, lang: str = "en") -> bytes:
     api_key = read_secret(SONIOX_ACCOUNT)
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
             SONIOX_TTS_URL,
             headers={"Authorization": f"Bearer {api_key}"},
-            json={"model": TTS_MODEL, "language": "en", "voice": TTS_VOICE,
+            json={"model": TTS_MODEL, "language": lang, "voice": TTS_VOICE,
                   "audio_format": "mp3", "text": text},
         )
     if not 200 <= resp.status_code < 300 or not resp.content:
@@ -321,20 +324,58 @@ async def tts(request: Request) -> Response:
     except ValueError:
         body = {}
     text = " ".join(str((body or {}).get("text") or "").split())[:TTS_MAX_CHARS]
+    lang = str((body or {}).get("lang") or "en")
+    if lang not in ("zh", "en", "fr"):
+        lang = "en"
     if not text:
         raise HTTPException(status_code=400, detail="没有要朗读的内容")
-    audio = _tts_cache.get(text)
+    cache_key = f"{lang}|{text}"
+    audio = _tts_cache.get(cache_key)
     if audio is None:
         try:
-            audio = await _soniox_tts(text)
+            audio = await _soniox_tts(text, lang)
         except KeychainError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from None
         except httpx.HTTPError:
             raise HTTPException(status_code=502, detail="连不上 Soniox 朗读服务") from None
-        _tts_cache[text] = audio
+        _tts_cache[cache_key] = audio
         while len(_tts_cache) > _TTS_CACHE_SIZE:
             _tts_cache.popitem(last=False)
     else:
-        _tts_cache.move_to_end(text)
+        _tts_cache.move_to_end(cache_key)
     return Response(content=audio, media_type="audio/mpeg",
                     headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ------------------------------------------------------------------ polished translation
+
+@app.post("/api/polish")
+async def polish(request: Request) -> JSONResponse:
+    """Fluent ChatGPT translation of one finished sentence (replaces Soniox's live one)."""
+    _require_auth(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bad json") from None
+    text = " ".join(str(body.get("text") or "").split())
+    if not text:
+        raise HTTPException(status_code=400, detail="没有要翻译的内容")
+    source, target = str(body.get("source") or "en"), str(body.get("target") or "zh")
+    if source not in ("zh", "en", "fr") or target not in ("zh", "en", "fr") or source == target:
+        raise HTTPException(status_code=400, detail="语言不对")
+    setting = " ".join(str(body.get("setting") or "Everyday conversation in Canada.").split())[:300]
+    glossary = body.get("glossary") if isinstance(body.get("glossary"), list) else []
+    context = body.get("context") if isinstance(body.get("context"), list) else []
+    user_text = build_polish_text(setting, glossary, context, text)
+    prompt_instructions = polish_instructions(source, target)
+
+    def run() -> tuple[str, str]:
+        model = _suggest_model()
+        return model, "".join(cp.stream_text(model=model, instructions=prompt_instructions,
+                                              user_text=user_text))
+
+    try:
+        model, out = await asyncio.to_thread(run)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=_friendly_error(exc)) from None
+    return JSONResponse({"text": out.strip(), "model": model})

@@ -86,3 +86,25 @@ assert.strictEqual(tidyCjk('ChatGPT 是 在说英语'), 'ChatGPT 是在说英语
 assert.strictEqual(renderParts([{ text: '出来，', final: true }, { text: ' 而且', final: true }], { cjk: true }), '出来，而且');
 
 console.log('frontend logic: all tests passed');
+
+// 9. Languages: spoken / translated language voted per utterance.
+{
+  const { countSentences, langPair } = require('../static/app.js');
+  const L = (text, speaker, lang, extra = {}) => ({ text, is_final: true, speaker, translation_status: 'original', language: lang, ...extra });
+  const Tr = (text, lang) => ({ text, is_final: true, translation_status: 'translation', language: lang });
+  const u2 = buildUtterances([
+    L('我熬夜了，', '1', 'zh'), L('所以有黑眼圈。', '1', 'zh'), Tr('I stayed up late, so I have dark circles.', 'en'),
+    { text: '<end>', is_final: true },
+    L('Vous restez ce soir ?', '2', 'fr'), Tr('你今晚留下吗？', 'zh'),
+  ]);
+  assert.strictEqual(u2[0].lang, 'zh');
+  assert.strictEqual(u2[0].transLang, 'en');
+  assert.strictEqual(u2[1].lang, 'fr');
+  assert.strictEqual(u2[1].transLang, 'zh');
+  assert.strictEqual(countSentences('Vous restez ce soir ? Oui.'), 2);
+  assert.strictEqual(countSentences('你好。你好吗？'), 2);
+  assert.deepStrictEqual(langPair('zh', 'zh'), ['zh', 'en']);
+  assert.deepStrictEqual(langPair('en', 'en'), ['en', 'zh']);
+  assert.deepStrictEqual(langPair('xx', 'fr'), ['zh', 'fr']);
+  console.log('language logic: all tests passed');
+}
