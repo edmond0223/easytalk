@@ -66,3 +66,20 @@ node tests/test_frontend_logic.js             # 前端逻辑测试（需要 Node
 - 断线自动重连后，说话人编号会重置，需要重新标一次「我」。
 - 连着麦克风时，iPhone 朗读声音可能从听筒出、比较小，需要实测。
 - 区分说话人在声音相近、话很短或很吵时会出错，可以点标签手动纠正。
+
+## 部署（正式运行）
+
+```text
+https://easytalk.edmondxu.com
+  ↓  Cloudflare Tunnel「crossborder-ai-web」
+     （配置：crossborder-ai-web/runtime/cloudflare/config.yml，launchd：com.edmondxu.crossborder-ai-web-tunnel）
+http://127.0.0.1:8795
+  ↓
+launchd：com.edmondxu.easytalk（deploy/com.edmondxu.easytalk.plist）
+```
+
+- 网页文件（static/）改完刷新即生效；Python 改动需要重启：
+  `launchctl kickstart -k gui/$(id -u)/com.edmondxu.easytalk`
+- 日志：`runtime/service/launchd.stderr.log`
+- 注意：Mac 上有多个隧道服务（crossborder、heretobuy、knowledgehub），重启隧道时认准
+  `com.edmondxu.crossborder-ai-web-tunnel`。
