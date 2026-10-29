@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @State private var session = TalkSession()
@@ -195,7 +196,7 @@ struct BubbleView: View {
             if !utterance.enText.isEmpty {
                 Text(utterance.enText)
                     .font(isMe ? Font.body : Font.subheadline)
-                    .foregroundStyle(isMe ? Color.primary : Color.secondary)
+                    .foregroundStyle(isMe ? Color.primary : Color.englishText)
             }
             if !utterance.zhText.isEmpty {
                 Text(utterance.zhText)
@@ -232,11 +233,20 @@ struct ParagraphView: View {
             if !zhOnly, !utterance.enText.isEmpty {
                 Text(utterance.enText)
                     .font(.system(size: fontSize * 0.62))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.englishText)
             }
             Divider().padding(.top, 6)
         }
         .opacity(utterance.hasPending ? 0.8 : 1)
         .textSelection(.enabled)
     }
+}
+
+extension Color {
+    /// English captions: a clear sky blue on dark backgrounds, a deep blue on light ones.
+    static let englishText = Color(UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.53, green: 0.80, blue: 1.00, alpha: 1)   // #87CCFF
+            : UIColor(red: 0.07, green: 0.33, blue: 0.75, alpha: 1)   // #1254BF
+    })
 }

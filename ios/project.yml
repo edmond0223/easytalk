@@ -4,6 +4,12 @@ options:
   bundleIdPrefix: com.edmondxu
   deploymentTarget:
     iOS: "17.0"
+  xcodeVersion: "26.4"          # marks the project as up to date for this Xcode
+settings:
+  base:
+    DEVELOPMENT_TEAM: D2B754BN62   # personal team (project level, targets inherit it)
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
 targets:
   EasyTalk:
     type: application
@@ -16,7 +22,6 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: D2B754BN62   # personal team; kept here so xcodegen does not drop it
         SWIFT_VERSION: "5.0"
         ENABLE_PREVIEWS: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
