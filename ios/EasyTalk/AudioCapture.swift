@@ -77,7 +77,11 @@ final class AudioCapture {
         while pending.count >= chunkBytes {
             let chunk = pending.prefix(chunkBytes)
             pending.removeFirst(chunkBytes)
-            onChunk?(Data(chunk), Float(peak) / 32767)
+            if micMuted.value {
+                onChunk?(Data(count: chunkBytes), 0)
+            } else {
+                onChunk?(Data(chunk), Float(peak) / 32767)
+            }
             peak = 0
         }
     }

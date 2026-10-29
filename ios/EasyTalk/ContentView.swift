@@ -21,6 +21,10 @@ struct ContentView: View {
 
                 transcript
 
+                if session.mode == .chat {
+                    SuggestionPanel(session: session)
+                    PhraseBar()
+                }
                 if session.mode == .lecture { lectureBar }
                 controls
             }
@@ -249,4 +253,97 @@ extension Color {
             ? UIColor(red: 0.53, green: 0.80, blue: 1.00, alpha: 1)   // #87CCFF
             : UIColor(red: 0.07, green: 0.33, blue: 0.75, alpha: 1)   // #1254BF
     })
+}
+
+// MARK: - chat helpers
+
+struct SuggestionPanel: View {
+    let session: TalkSession
+    private var speaker: Speaker { Speaker.shared }
+
+    var body: some View {
+        if session.suggestStatus != .idle || !session.suggestions.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text("建议回答").font(.subheadline.bold())
+                    Text("点一下朗读").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    statusView
+                    Button { session.refreshSuggestions() } label: { Image(systemName: "arrow.clockwise") }
+                        .disabled(session.suggestStatus == .thinking)
+                }
+                switch session.suggestStatus {
+                case .notConnected:
+                    Text("在设置（右上角齿轮）里连接 ChatGPT 后，对方说完会自动给出建议回答。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                case .failed(let message):
+                    Text(message).font(.footnote).foregroundStyle(.red)
+                default:
+                    ForEach(session.suggestions) { s in
+                        Button { speaker.speak(s.en) } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(s.en).font(.headline).foregroundStyle(.primary)
+                                if !s.zh.isEmpty {
+                                    Text(s.zh).font(.footnote).foregroundStyle(.secondary)
+                                }
+                            }
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12)
+                                .stroke(speaker.speakingText == s.en ? Color.blue : Color.clear, lineWidth: 2))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(.bar)
+        }
+    }
+
+    @ViewBuilder private var statusView: some View {
+        switch session.suggestStatus {
+        case .thinking:
+            ProgressView().controlSize(.small)
+        case .done(let seconds):
+            Text(String(format: "%.1fs", seconds)).font(.caption).foregroundStyle(.secondary)
+        default:
+            EmptyView()
+        }
+    }
+}
+
+struct Phrase: Identifiable {
+    let zh: String
+    let en: String
+    var id: String { zh }
+}
+
+struct PhraseBar: View {
+    static let phrases = [
+        Phrase(zh: "请再说一遍", en: "Sorry, could you say that again?"),
+        Phrase(zh: "请说慢一点", en: "Could you speak a little slower, please?"),
+        Phrase(zh: "让我想一下", en: "Let me think for a second."),
+        Phrase(zh: "说简单一点", en: "Sorry, my English isn't great. Could you say it more simply?"),
+        Phrase(zh: "能写下来吗", en: "Could you write that down for me, please?"),
+        Phrase(zh: "我明白了", en: "Okay, I understand. Thank you."),
+    ]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Self.phrases) { p in
+                    Button(p.zh) { Speaker.shared.speak(p.en) }
+                        .buttonStyle(.bordered)
+                        .tint(Speaker.shared.speakingText == p.en ? Color.blue : Color.gray)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+        }
+        .background(.bar)
+    }
 }

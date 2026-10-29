@@ -6,6 +6,12 @@ struct SettingsView: View {
     @AppStorage(Prefs.scene) private var scene = TalkScene.work.rawValue
     @AppStorage(Prefs.topic) private var topic = ""
     @AppStorage(Prefs.terms) private var terms = ""
+    @AppStorage(Prefs.chatgptModel) private var chatgptModel = ""
+    @AppStorage(Prefs.chatgptModels) private var modelsCSV = ""
+    @State private var chatgpt = ChatGPTStore.load()
+    @State private var connecting = false
+    @State private var chatgptMessage: String?
+    @State private var auth = ChatGPTAuth()
 
     var body: some View {
         NavigationStack {
@@ -18,6 +24,34 @@ struct SettingsView: View {
                     Text("Soniox")
                 } footer: {
                     Text(sonioxKey.isEmpty ? "还没有填写。" : "已填写（\(sonioxKey.count) 个字符）。只保存在这台 iPhone 的钥匙串里。")
+                }
+
+                Section {
+                    if let rec = chatgpt, rec.hasTokens, rec.planGranted {
+                        LabeledContent("已连接", value: rec.email ?? "ChatGPT")
+                        Picker("模型", selection: $chatgptModel) {
+                            ForEach(models, id: \.self) { Text($0).tag($0) }
+                        }
+                        Button("断开连接", role: .destructive) {
+                            ChatGPTStore.signOut()
+                            chatgpt = ChatGPTStore.load()
+                            chatgptMessage = nil
+                        }
+                    } else {
+                        Button {
+                            Task { await connect() }
+                        } label: {
+                            HStack {
+                                Text("连接 ChatGPT")
+                                if connecting { Spacer(); ProgressView() }
+                            }
+                        }
+                        .disabled(connecting)
+                    }
+                } header: {
+                    Text("ChatGPT（建议回答）")
+                } footer: {
+                    Text(chatgptMessage ?? "用你自己的 ChatGPT Plus 套餐生成建议回答。登录时请允许「Use your ChatGPT plan」。登录凭据只保存在这台 iPhone。")
                 }
 
                 Section("对话场景") {
@@ -43,6 +77,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .onAppear(perform: ensureModel)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -53,6 +88,36 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var models: [String] {
+        let list = modelsCSV.split(separator: ",").map(String.init)
+        if chatgptModel.isEmpty || list.contains(chatgptModel) { return list }
+        return [chatgptModel] + list
+    }
+
+    private func ensureModel() {
+        if chatgptModel.isEmpty, let first = models.first { chatgptModel = first }
+    }
+
+    private func connect() async {
+        connecting = true
+        chatgptMessage = nil
+        defer { connecting = false }
+        do {
+            _ = try await auth.signIn()
+            chatgpt = ChatGPTStore.load()
+            let list = (try? await ChatGPTClient.listModels()) ?? []
+            if !list.isEmpty { modelsCSV = list.joined(separator: ",") }
+            if chatgptModel.isEmpty || !list.contains(chatgptModel) {
+                chatgptModel = list.first(where: { $0 == "gpt-6-luna" })
+                    ?? list.first(where: { $0.contains("luna") }) ?? list.first ?? "gpt-6-luna"
+            }
+            chatgptMessage = "已连接 ChatGPT。对方说完一轮后，会自动给出建议回答。"
+        } catch {
+            chatgpt = ChatGPTStore.load()
+            chatgptMessage = "连接失败：\(error.localizedDescription)"
         }
     }
 }

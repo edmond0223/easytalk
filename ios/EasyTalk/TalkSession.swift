@@ -37,6 +37,7 @@ enum TalkScene: String, CaseIterable, Identifiable {
 
 enum Prefs {
     static let scene = "scene", topic = "topic", terms = "terms", mode = "mode", fontSize = "fontSize"
+    static let chatgptModel = "chatgptModel", chatgptModels = "chatgptModels"
 }
 
 /// One listening session: microphone → Soniox → transcript.
@@ -54,6 +55,10 @@ final class TalkSession {
     private(set) var speakerNumbers: [String: Int] = [:]
     var me: Set<String> = []
     var errorMessage: String?
+    private(set) var suggestions: [Suggestion] = []
+    private(set) var suggestStatus: SuggestStatus = .idle
+    private var suggestTask: Task<Void, Never>?
+    private var lastSuggestKey = ""
 
     private var finals: [Token] = []
     private var nonFinals: [Token] = []
@@ -116,6 +121,7 @@ final class TalkSession {
             try audio.start()
             self.audio = audio
             status = "正在听"
+            Speaker.shared.recording = true
             UIApplication.shared.isIdleTimerDisabled = true
             interruptionObserver = NotificationCenter.default.addObserver(
                 forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
@@ -153,6 +159,10 @@ final class TalkSession {
         nonFinals = []
         me = []
         speakerNumbers = [:]
+        suggestTask?.cancel()
+        suggestions = []
+        suggestStatus = .idle
+        lastSuggestKey = ""
         rebuild()
     }
 
@@ -205,12 +215,19 @@ final class TalkSession {
             return
         }
         var nf: [Token] = []
+        var sawEnd = false
         for var t in msg.tokens ?? [] where !t.text.isEmpty {
             if let s = t.speaker { t.speaker = "\(session):\(s)" }
-            if t.isFinal { finals.append(t) } else { nf.append(t) }
+            if t.isFinal {
+                finals.append(t)
+                if t.text == "<end>" { sawEnd = true }
+            } else {
+                nf.append(t)
+            }
         }
         nonFinals = nf
         rebuild()
+        if sawEnd, mode == .chat { maybeSuggest() }
         if msg.finished == true { client?.cancel() }
     }
 
@@ -230,11 +247,83 @@ final class TalkSession {
         client = nil
         nonFinals = []
         level = 0
+        Speaker.shared.recording = false
+        micMuted.value = false
         rebuild()
         status = errorMessage == nil ? "已停止" : "出错"
         UIApplication.shared.isIdleTimerDisabled = false
         if let o = interruptionObserver { NotificationCenter.default.removeObserver(o) }
         interruptionObserver = nil
+    }
+
+    // MARK: suggestions
+
+    private func conversationTurns() -> [Turn] {
+        Array(utterances
+            .map { Turn(isMe: me.contains($0.speaker), text: $0.enText) }
+            .filter { !$0.text.isEmpty }
+            .suffix(12))
+    }
+
+    /// After the other person finishes a turn, ask ChatGPT for replies.
+    private func maybeSuggest() {
+        let turns = conversationTurns()
+        guard let last = turns.last, !last.isMe,
+              last.text.split(whereSeparator: \.isWhitespace).count >= 2 else { return }
+        let key = "\(turns.count)|\(last.text)"
+        guard key != lastSuggestKey else { return }
+        lastSuggestKey = key
+        guard ChatGPTStore.connected else {
+            suggestStatus = .notConnected
+            return
+        }
+        requestSuggestions(turns)
+    }
+
+    func refreshSuggestions() {
+        let turns = conversationTurns()
+        guard !turns.isEmpty else { return }
+        guard ChatGPTStore.connected else {
+            suggestStatus = .notConnected
+            return
+        }
+        requestSuggestions(turns)
+    }
+
+    private func requestSuggestions(_ turns: [Turn]) {
+        suggestTask?.cancel()
+        suggestions = []
+        suggestStatus = .thinking
+        let defaults = UserDefaults.standard
+        let scene = TalkScene(rawValue: defaults.string(forKey: Prefs.scene) ?? "") ?? .work
+        let prompt = buildSuggestionPrompt(scene: scene, turns: turns)
+        let model = defaults.string(forKey: Prefs.chatgptModel).flatMap { $0.isEmpty ? nil : $0 } ?? "gpt-6-luna"
+        suggestTask = Task { [weak self] in
+            let started = Date()
+            var buf = ""
+            do {
+                for try await delta in ChatGPTClient.streamText(model: model, instructions: suggestInstructions,
+                                                                userText: prompt) {
+                    buf += delta
+                    while let nl = buf.firstIndex(of: "\n") {
+                        let line = String(buf[..<nl])
+                        buf.removeSubrange(...nl)
+                        self?.addSuggestion(line)
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                self?.addSuggestion(buf)
+                self?.suggestStatus = .done(seconds: Date().timeIntervalSince(started))
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.suggestStatus = .failed(friendlyChatGPTError(error))
+            }
+        }
+    }
+
+    private func addSuggestion(_ line: String) {
+        guard suggestions.count < 3, let item = parseSuggestionLine(line) else { return }
+        suggestions.append(Suggestion(id: suggestions.count, en: item.en, zh: item.zh))
     }
 
     private func rebuild() {
