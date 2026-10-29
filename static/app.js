@@ -476,7 +476,8 @@ if (typeof document !== 'undefined') {
       ctx.close().catch(() => {});
       throw err;
     }
-    await ctx.audioWorklet.addModule('/static/pcm-worklet.js');
+    const v = document.querySelector('meta[name="asset-version"]')?.content || Date.now();
+    await ctx.audioWorklet.addModule(`/static/pcm-worklet.js?v=${v}`);
     const src = ctx.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(ctx, 'pcm-writer');
     const mute = ctx.createGain();

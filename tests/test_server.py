@@ -40,6 +40,9 @@ def test_index_and_health(client):
     r = client.get("/")
     assert r.status_code == 200 and "EasyTalk" in r.text
     assert "/static/app.js?v=" in r.text and "/static/style.css?v=" in r.text
+    version = str(appmod._asset_version())
+    assert f'<meta name="asset-version" content="{version}">' in r.text
+    assert f"/static/app.js?v={version}" in r.text
     assert r.headers["cache-control"] == "no-store"
     assert r.headers["permissions-policy"] == "microphone=(self)"
 
