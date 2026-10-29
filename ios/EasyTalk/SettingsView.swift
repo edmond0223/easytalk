@@ -7,6 +7,8 @@ struct SettingsView: View {
     @AppStorage(Prefs.topic) private var topic = ""
     @AppStorage(Prefs.terms) private var terms = ""
     @AppStorage(Prefs.chatgptModel) private var chatgptModel = ""
+    @AppStorage(Prefs.suggestEnabled) private var suggestOn = true
+    @AppStorage(Prefs.polishEnabled) private var polishOn = true
     @AppStorage(Prefs.chatgptModels) private var modelsCSV = ""
     @State private var chatgpt = ChatGPTStore.load()
     @State private var connecting = false
@@ -28,6 +30,8 @@ struct SettingsView: View {
 
                 Section {
                     if let rec = chatgpt, rec.hasTokens, rec.planGranted {
+                        Toggle("建议回答", isOn: $suggestOn)
+                        Toggle("精修翻译", isOn: $polishOn)
                         LabeledContent("已连接", value: rec.email ?? "ChatGPT")
                         Picker("模型", selection: $chatgptModel) {
                             ForEach(models, id: \.self) { Text($0).tag($0) }
@@ -51,7 +55,7 @@ struct SettingsView: View {
                 } header: {
                     Text("ChatGPT（建议回答）")
                 } footer: {
-                    Text(chatgptMessage ?? "用你自己的 ChatGPT Plus 套餐生成建议回答。登录时请允许「Use your ChatGPT plan」。登录凭据只保存在这台 iPhone。")
+                    Text(chatgptMessage ?? "精修翻译：每句话说完后，用 ChatGPT 重新翻译成通顺的中文，替换实时翻译。用你自己的 ChatGPT Plus 套餐生成建议回答和精修翻译。登录时请允许「Use your ChatGPT plan」。登录凭据只保存在这台 iPhone。")
                 }
 
                 Section("对话场景") {

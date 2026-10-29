@@ -77,3 +77,33 @@ func parseSuggestionLine(_ raw: String) -> (en: String, zh: String)? {
         .trimmingCharacters(in: .whitespaces).trimmingCharacters(in: quotes).trimmingCharacters(in: .whitespaces)
     return en.isEmpty ? nil : (en, zh)
 }
+
+// MARK: - polished translation
+
+let polishInstructions = """
+You translate live English speech captions into natural, fluent Simplified Chinese for a Mandarin speaker living in Canada.
+
+Rules:
+- Translate only the text under TRANSLATE. Earlier lines are context only; never translate or repeat them.
+- Keep the meaning exact, especially numbers, times, dates, amounts, names and places.
+- Natural spoken Chinese, not word-for-word. Keep English names and brands as they are when there is no common Chinese name.
+- The text comes from speech recognition and may contain small errors; translate the most likely intended meaning.
+- Use the glossary translations when those terms appear.
+- Output only the Chinese translation, nothing else.
+"""
+
+func buildPolishPrompt(setting: String, glossary: [[String: String]], context: [String], text: String) -> String {
+    var parts = ["Setting: \(setting)"]
+    if !glossary.isEmpty {
+        let lines = glossary.prefix(60).compactMap { g -> String? in
+            guard let s = g["source"], let t = g["target"] else { return nil }
+            return "\(s) = \(t)"
+        }
+        parts.append("Glossary:\n" + lines.joined(separator: "\n"))
+    }
+    if !context.isEmpty {
+        parts.append("Context (earlier, do not translate):\n" + context.joined(separator: "\n"))
+    }
+    parts.append("TRANSLATE:\n\(text)")
+    return parts.joined(separator: "\n\n")
+}

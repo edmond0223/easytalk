@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var confirmClear = false
     @AppStorage(Prefs.fontSize) private var fontSize: Double = 24
     @AppStorage("zhOnly") private var zhOnly = false
+    @AppStorage(Prefs.suggestEnabled) private var suggestOn = true
 
     var body: some View {
         NavigationStack {
@@ -22,8 +23,8 @@ struct ContentView: View {
                 transcript
 
                 if session.mode == .chat {
-                    SuggestionPanel(session: session)
-                    PhraseBar()
+                    if suggestOn { SuggestionPanel(session: session) }
+                    PhraseBar(suggestOn: $suggestOn)
                 }
                 if session.mode == .lecture { lectureBar }
                 controls
@@ -40,6 +41,9 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .onChange(of: suggestOn) { _, on in
+                if !on { session.clearSuggestions() }
+            }
             .alert("提示", isPresented: Binding(
                 get: { session.errorMessage != nil },
                 set: { if !$0 { session.errorMessage = nil } }
@@ -67,11 +71,11 @@ struct ContentView: View {
                     if visible.isEmpty { HintView(mode: session.mode) }
                     ForEach(visible) { u in
                         if session.mode == .lecture {
-                            ParagraphView(utterance: u,
+                            ParagraphView(utterance: u, zh: session.translation(for: u),
                                           speaker: session.distinctSpeakers > 1 ? session.speakerName(u.speaker) : nil,
                                           fontSize: fontSize, zhOnly: zhOnly)
                         } else {
-                            BubbleView(utterance: u,
+                            BubbleView(utterance: u, zh: session.translation(for: u),
                                        isMe: session.me.contains(u.speaker),
                                        name: session.speakerName(u.speaker)) {
                                 session.toggleMe(u.speaker)
@@ -141,7 +145,8 @@ struct ContentView: View {
         for u in visible {
             if multi { lines.append("【\(session.speakerName(u.speaker))】") }
             if !u.enText.isEmpty { lines.append(u.enText) }
-            if !u.zhText.isEmpty { lines.append(u.zhText) }
+            let zh = session.translation(for: u)
+            if !zh.isEmpty { lines.append(zh) }
             lines.append("")
         }
         return lines.joined(separator: "\n")
@@ -186,6 +191,7 @@ struct HintView: View {
 
 struct BubbleView: View {
     let utterance: Utterance
+    let zh: String
     let isMe: Bool
     let name: String
     let onTag: () -> Void
@@ -202,8 +208,8 @@ struct BubbleView: View {
                     .font(isMe ? Font.body : Font.subheadline)
                     .foregroundStyle(isMe ? Color.primary : Color.englishText)
             }
-            if !utterance.zhText.isEmpty {
-                Text(utterance.zhText)
+            if !zh.isEmpty {
+                Text(zh)
                     .font(isMe ? Font.footnote : Font.system(size: 23, weight: .semibold))
                     .foregroundStyle(isMe ? Color.secondary : Color.primary)
             }
@@ -221,6 +227,7 @@ struct BubbleView: View {
 
 struct ParagraphView: View {
     let utterance: Utterance
+    let zh: String
     let speaker: String?
     let fontSize: Double
     let zhOnly: Bool
@@ -230,8 +237,8 @@ struct ParagraphView: View {
             if let speaker {
                 Text(speaker).font(.caption).foregroundStyle(.blue)
             }
-            if !utterance.zhText.isEmpty {
-                Text(utterance.zhText)
+            if !zh.isEmpty {
+                Text(zh)
                     .font(.system(size: fontSize, weight: .semibold))
             }
             if !zhOnly, !utterance.enText.isEmpty {
@@ -283,8 +290,10 @@ struct SuggestionPanel: View {
                         Button { speaker.speak(s.en) } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(s.en).font(.headline).foregroundStyle(.primary)
+                                    .fixedSize(horizontal: false, vertical: true)
                                 if !s.zh.isEmpty {
                                     Text(s.zh).font(.footnote).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
                             .multilineTextAlignment(.leading)
@@ -323,6 +332,8 @@ struct Phrase: Identifiable {
 }
 
 struct PhraseBar: View {
+    @Binding var suggestOn: Bool
+
     static let phrases = [
         Phrase(zh: "请再说一遍", en: "Sorry, could you say that again?"),
         Phrase(zh: "请说慢一点", en: "Could you speak a little slower, please?"),
@@ -335,6 +346,14 @@ struct PhraseBar: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
+                Toggle(isOn: $suggestOn) {
+                    Label("建议", systemImage: suggestOn ? "lightbulb.fill" : "lightbulb.slash")
+                }
+                .toggleStyle(.button)
+                .buttonStyle(.bordered)
+                .tint(suggestOn ? Color.orange : Color.gray)
+                .accessibilityLabel(suggestOn ? "关闭建议回答" : "开启建议回答")
+                Divider().frame(height: 24)
                 ForEach(Self.phrases) { p in
                     Button(p.zh) { Speaker.shared.speak(p.en) }
                         .buttonStyle(.bordered)

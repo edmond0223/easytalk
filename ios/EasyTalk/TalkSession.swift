@@ -38,6 +38,14 @@ enum TalkScene: String, CaseIterable, Identifiable {
 enum Prefs {
     static let scene = "scene", topic = "topic", terms = "terms", mode = "mode", fontSize = "fontSize"
     static let chatgptModel = "chatgptModel", chatgptModels = "chatgptModels"
+    static let suggestEnabled = "suggestEnabled"
+    static let polishEnabled = "polishEnabled"
+
+    /// ChatGPT re-translates each finished sentence unless switched off.
+    static var polishOn: Bool { UserDefaults.standard.object(forKey: polishEnabled) as? Bool ?? true }
+
+    /// Reply suggestions are on unless the user switched them off.
+    static var suggestionsOn: Bool { UserDefaults.standard.object(forKey: suggestEnabled) as? Bool ?? true }
 }
 
 /// One listening session: microphone → Soniox → transcript.
@@ -59,6 +67,9 @@ final class TalkSession {
     private(set) var suggestStatus: SuggestStatus = .idle
     private var suggestTask: Task<Void, Never>?
     private var lastSuggestKey = ""
+    /// Fluent ChatGPT translations of finished sentences, keyed by their English text.
+    private(set) var polished: [String: String] = [:]
+    @ObservationIgnored private var polishing: Set<String> = []
 
     private var finals: [Token] = []
     private var nonFinals: [Token] = []
@@ -163,6 +174,8 @@ final class TalkSession {
         suggestions = []
         suggestStatus = .idle
         lastSuggestKey = ""
+        polished = [:]
+        polishing = []
         rebuild()
     }
 
@@ -227,7 +240,10 @@ final class TalkSession {
         }
         nonFinals = nf
         rebuild()
-        if sawEnd, mode == .chat { maybeSuggest() }
+        if sawEnd {
+            polishFinished()
+            if mode == .chat { maybeSuggest() }
+        }
         if msg.finished == true { client?.cancel() }
     }
 
@@ -256,6 +272,52 @@ final class TalkSession {
         interruptionObserver = nil
     }
 
+    // MARK: polished translation
+
+    /// The best Chinese we have for this utterance.
+    func translation(for u: Utterance) -> String {
+        polished[u.enText] ?? u.zhText
+    }
+
+    /// Send each newly finished sentence to ChatGPT for a fluent translation.
+    private func polishFinished() {
+        guard Prefs.polishOn, ChatGPTStore.connected else { return }
+        let defaults = UserDefaults.standard
+        let setting: String = {
+            if mode == .lecture {
+                let topic = (defaults.string(forKey: Prefs.topic) ?? "").trimmingCharacters(in: .whitespaces)
+                return topic.isEmpty ? "A meeting, lecture or presentation." : "A meeting or lecture about: \(topic)"
+            }
+            return (TalkScene(rawValue: defaults.string(forKey: Prefs.scene) ?? "") ?? .work).promptSetting
+        }()
+        let glossary = parseTerms(defaults.string(forKey: Prefs.terms) ?? "").translations
+        let model = defaults.string(forKey: Prefs.chatgptModel).flatMap { $0.isEmpty ? nil : $0 } ?? "gpt-6-luna"
+
+        let spoken = utterances.filter { !$0.enText.isEmpty }
+        for (i, u) in spoken.enumerated().suffix(6) {
+            let key = u.enText
+            guard u.ended, !u.en.contains(where: { !$0.isFinal }),
+                  polished[key] == nil, !polishing.contains(key) else { continue }
+            polishing.insert(key)
+            let context = spoken[max(0, i - 2)..<i].map(\.enText)
+            let prompt = buildPolishPrompt(setting: setting, glossary: glossary, context: context, text: key)
+            Task { [weak self] in
+                var out = ""
+                do {
+                    for try await delta in ChatGPTClient.streamText(model: model, instructions: polishInstructions,
+                                                                    userText: prompt) {
+                        out += delta
+                    }
+                    let text = Utterance.tidyChinese(out.trimmingCharacters(in: .whitespacesAndNewlines))
+                    if !text.isEmpty, self?.polishing.contains(key) == true { self?.polished[key] = text }
+                } catch {
+                    // Keep Soniox's translation.
+                }
+                self?.polishing.remove(key)
+            }
+        }
+    }
+
     // MARK: suggestions
 
     private func conversationTurns() -> [Turn] {
@@ -267,6 +329,7 @@ final class TalkSession {
 
     /// After the other person finishes a turn, ask ChatGPT for replies.
     private func maybeSuggest() {
+        guard Prefs.suggestionsOn else { return }
         let turns = conversationTurns()
         guard let last = turns.last, !last.isMe,
               last.text.split(whereSeparator: \.isWhitespace).count >= 2 else { return }
@@ -278,6 +341,13 @@ final class TalkSession {
             return
         }
         requestSuggestions(turns)
+    }
+
+    /// Called when the user switches suggestions off.
+    func clearSuggestions() {
+        suggestTask?.cancel()
+        suggestions = []
+        suggestStatus = .idle
     }
 
     func refreshSuggestions() {
